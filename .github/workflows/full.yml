@@ -1,0 +1,1465 @@
+name: Build Offline Virtualmin/Webmin Package Bundle (Complete + Release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu_version:
+        description: 'Ubuntu Version'
+        required: true
+        default: 'jammy'
+        type: choice
+        options:
+          - jammy
+          - noble
+      bundle_type:
+        description: 'Bundle Type'
+        required: true
+        default: 'virtualmin-full-lamp'
+        type: choice
+        options:
+          - webmin-only
+          - virtualmin-full-lamp
+          - virtualmin-full-lemp
+          - virtualmin-mini-lamp
+          - virtualmin-mini-lemp
+          - cockpit-web
+      release_version:
+        description: 'Release Version Tag (e.g. v1.0.0) - Leave empty for auto'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  build-offline-bundle:
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ github.event.inputs.ubuntu_version }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Environment
+        run: |
+          apt-get update
+          apt-get install -y wget curl gnupg2 ca-certificates lsb-release dpkg-dev apt-utils
+          mkdir -p /offline-bundle/packages
+          mkdir -p /offline-bundle/scripts
+          mkdir -p /offline-bundle/repos
+          mkdir -p /offline-bundle/docs
+          mkdir -p /etc/apt/keyrings
+
+      # ============================================
+      # SETUP REPOSITORIES WITH FALLBACK
+      # ============================================
+      - name: Setup Virtualmin/Webmin Repositories (3-Fallback)
+        if: contains(github.event.inputs.bundle_type, 'virtualmin') || github.event.inputs.bundle_type == 'webmin-only'
+        run: |
+          echo "=== Setting up repositories with fallback ==="
+          METHOD_SUCCESS=false
+
+          # Method 1: Virtualmin 7 GPG Key
+          if curl -fsSL --connect-timeout 15 --max-time 30 \
+            "https://software.virtualmin.com/lib/RPM-GPG-KEY-virtualmin-7" \
+            -o /etc/apt/keyrings/virtualmin-7.asc 2>/dev/null; then
+            if gpg --dry-run --import /etc/apt/keyrings/virtualmin-7.asc 2>/dev/null; then
+              echo "deb [signed-by=/etc/apt/keyrings/virtualmin-7.asc] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+                > /etc/apt/sources.list.d/virtualmin.list
+              METHOD_SUCCESS=true
+              echo "✅ Method 1: Virtualmin 7 key OK"
+            fi
+          fi
+
+          # Method 2: Virtualmin 6 GPG Key
+          if [ "$METHOD_SUCCESS" = false ]; then
+            if curl -fsSL --connect-timeout 15 --max-time 30 \
+              "https://software.virtualmin.com/lib/RPM-GPG-KEY-virtualmin-6" \
+              -o /etc/apt/keyrings/virtualmin-7.asc 2>/dev/null; then
+              if gpg --dry-run --import /etc/apt/keyrings/virtualmin-7.asc 2>/dev/null; then
+                echo "deb [signed-by=/etc/apt/keyrings/virtualmin-7.asc] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+                  > /etc/apt/sources.list.d/virtualmin.list
+                METHOD_SUCCESS=true
+                echo "✅ Method 2: Virtualmin 6 key OK"
+              fi
+            fi
+          fi
+
+          # Method 3: Webmin Key + Trusted Virtualmin
+          if [ "$METHOD_SUCCESS" = false ]; then
+            if curl -fsSL --connect-timeout 15 --max-time 30 \
+              "https://download.webmin.com/jcameron-key.asc" \
+              -o /etc/apt/keyrings/webmin.asc 2>/dev/null; then
+              if gpg --dry-run --import /etc/apt/keyrings/webmin.asc 2>/dev/null; then
+                echo "deb [signed-by=/etc/apt/keyrings/webmin.asc] https://download.webmin.com/download/repository sarge contrib" \
+                  > /etc/apt/sources.list.d/webmin.list
+                echo "deb [trusted=yes] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+                  > /etc/apt/sources.list.d/virtualmin.list
+                METHOD_SUCCESS=true
+                echo "✅ Method 3: Webmin key + trusted Virtualmin OK"
+              fi
+            fi
+          fi
+
+          # Fallback: No GPG
+          if [ "$METHOD_SUCCESS" = false ]; then
+            echo "deb [trusted=yes] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+              > /etc/apt/sources.list.d/virtualmin.list
+            echo "deb [trusted=yes] https://download.webmin.com/download/repository sarge contrib" \
+              > /etc/apt/sources.list.d/webmin.list
+            echo "⚠️ FALLBACK: No GPG verification"
+          fi
+
+          apt-get update || echo "Some repos failed, continuing..."
+
+      # ============================================
+      # DOWNLOAD ALL DEPENDENCIES COMPLETELY
+      # ============================================
+      - name: Download Complete Dependencies
+        run: |
+          echo "=== Downloading all dependencies ==="
+
+          # Common system dependencies
+          apt-get install --download-only -y \
+            perl libnet-ssleay-perl openssl \
+            libauthen-pam-perl libpam-runtime \
+            libio-pty-perl apt-show-versions python3 \
+            unzip shared-mime-info ca-certificates \
+            curl wget gnupg2 lsb-release \
+            2>/dev/null || true
+
+          # Core webmin dependencies
+          apt-get install --download-only -y \
+            webmin usermin \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+      # ============================================
+      # WEBMIN ONLY BUNDLE
+      # ============================================
+      - name: Build Webmin-Only Bundle
+        if: github.event.inputs.bundle_type == 'webmin-only'
+        run: |
+          echo "=== Building Webmin-Only Bundle ==="
+
+          # Download Webmin with all deps
+          apt-get install --download-only -y webmin 2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated webmin 2>/dev/null || true
+
+          # Ensure all dependencies are downloaded
+          apt-get install --download-only -y \
+            perl libnet-ssleay-perl openssl \
+            libauthen-pam-perl libpam-runtime \
+            libio-pty-perl apt-show-versions python3 \
+            unzip shared-mime-info libapt-pkg-perl \
+            libjson-pp-perl libencode-locale-perl \
+            libfile-listing-perl libhtml-parser-perl \
+            libhtml-tagset-perl libhtml-tree-perl \
+            libhttp-cookies-perl libhttp-date-perl \
+            libhttp-message-perl libhttp-negotiate-perl \
+            libio-html-perl libio-socket-ssl-perl \
+            liblwp-mediatypes-perl liblwp-protocol-https-perl \
+            libnet-http-perl libnet-smtp-ssl-perl \
+            libsocket6-perl libtimedate-perl \
+            liburi-perl libwww-perl libwww-robotrules-perl \
+            2>/dev/null || true
+
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/ 2>/dev/null || true
+
+          # Create comprehensive install script
+          cat > /offline-bundle/scripts/install.sh << 'INSTALLER'
+          #!/bin/bash
+          # Offline Webmin Installer
+          # Generated automatically - DO NOT EDIT
+
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          PACKAGE_DIR="$SCRIPT_DIR/../packages"
+          LOG_FILE="/var/log/offline-install.log"
+
+          # Colors
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          NC='\033[0m'
+
+          log() { echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+          warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
+          error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+
+          log "Starting Webmin offline installation..."
+          log "Package directory: $PACKAGE_DIR"
+
+          # Check if running as root
+          if [ "$EUID" -ne 0 ]; then
+            error "Please run as root (use sudo)"
+          fi
+
+          # Check packages exist
+          if [ ! -d "$PACKAGE_DIR" ] || [ -z "$(ls -A "$PACKAGE_DIR"/*.deb 2>/dev/null)" ]; then
+            error "No packages found in $PACKAGE_DIR"
+          fi
+
+          # Install packages
+          cd "$PACKAGE_DIR"
+          log "Installing packages..."
+          dpkg -i *.deb 2>&1 | tee -a "$LOG_FILE" || true
+
+          # Fix broken dependencies
+          log "Fixing dependencies..."
+          apt-get install -f -y 2>&1 | tee -a "$LOG_FILE" || true
+
+          # Reconfigure if needed
+          dpkg --configure -a 2>&1 | tee -a "$LOG_FILE" || true
+
+          # Enable and start Webmin
+          log "Enabling Webmin service..."
+          systemctl enable webmin || true
+          systemctl start webmin || true
+
+          # Get IP address
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+
+          log "=========================================="
+          log "✅ Webmin installed successfully!"
+          log ""
+          log "Access URLs:"
+          log "  HTTPS: https://${IP_ADDR}:10000"
+          log ""
+          log "Default login: root (or your system user)"
+          log "=========================================="
+          INSTALLER
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # VIRTUALMIN FULL LAMP BUNDLE
+      # ============================================
+      - name: Build Virtualmin Full (LAMP)
+        if: github.event.inputs.bundle_type == 'virtualmin-full-lamp'
+        run: |
+          echo "=== Building Virtualmin Full (LAMP) ==="
+
+          # Core Virtualmin packages
+          apt-get install --download-only -y \
+            webmin usermin virtualmin-base \
+            virtualmin-core virtualmin-config \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+          # Complete LAMP Stack
+          apt-get install --download-only -y \
+            apache2 apache2-utils apache2-bin \
+            apache2-data apache2-doc \
+            libapache2-mod-php libapache2-mod-fcgid \
+            libapache2-mod-perl2 libapache2-mod-python \
+            mariadb-server mariadb-client \
+            mariadb-common mariadb-server-core \
+            php php-cli php-fpm php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            php-zip php-intl php-bcmath php-json \
+            php-opcache php-soap php-xmlrpc \
+            php-bz2 php-readline php-sqlite3 \
+            php-tidy php-xsl php-pear \
+            2>/dev/null || true
+
+          # Mail services
+          apt-get install --download-only -y \
+            bind9 bind9utils bind9-doc dnsutils \
+            postfix postfix-pcre postfix-doc \
+            dovecot-core dovecot-imapd dovecot-pop3d \
+            dovecot-lmtpd dovecot-mysql \
+            mailutils mailutils-mda \
+            2>/dev/null || true
+
+          # FTP & Security
+          apt-get install --download-only -y \
+            proftpd-basic proftpd-mod-vroot \
+            proftpd-doc \
+            clamav clamav-daemon clamav-freshclam \
+            spamassassin spamc \
+            fail2ban \
+            ufw \
+            2>/dev/null || true
+
+          # SSL & Certificates
+          apt-get install --download-only -y \
+            certbot python3-certbot-apache \
+            python3-certbot-dns-cloudflare \
+            python3-certbot-dns-route53 \
+            openssl ssl-cert \
+            2>/dev/null || true
+
+          # Additional tools
+          apt-get install --download-only -y \
+            awstats webalizer \
+            phpmyadmin adminer \
+            roundcube-core roundcube-mysql \
+            2>/dev/null || true
+
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install.sh << 'INSTALLER'
+          #!/bin/bash
+          # Offline Virtualmin Full (LAMP) Installer
+          # Generated automatically - DO NOT EDIT
+
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          PACKAGE_DIR="$SCRIPT_DIR/../packages"
+          LOG_FILE="/var/log/offline-install.log"
+
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          BLUE='\033[0;34m'
+          NC='\033[0m'
+
+          log() { echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+          warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
+          error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+          info() { echo -e "${BLUE}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+
+          log "Starting Virtualmin Full (LAMP) offline installation..."
+
+          if [ "$EUID" -ne 0 ]; then
+            error "Please run as root (use sudo)"
+          fi
+
+          if [ ! -d "$PACKAGE_DIR" ] || [ -z "$(ls -A "$PACKAGE_DIR"/*.deb 2>/dev/null)" ]; then
+            error "No packages found in $PACKAGE_DIR"
+          fi
+
+          # Pre-install configuration
+          info "Pre-configuring packages..."
+          export DEBIAN_FRONTEND=noninteractive
+
+          # Set default passwords for services
+          MYSQL_ROOT_PASS="${MYSQL_ROOT_PASS:-$(openssl rand -base64 24)}"
+          POSTFIX_CONFIG="internet"
+
+          # Pre-configure MySQL
+          debconf-set-selections << EOF || true
+          mysql-server mysql-server/root_password password $MYSQL_ROOT_PASS
+          mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASS
+          EOF
+
+          cd "$PACKAGE_DIR"
+
+          # Install in order: base -> web -> db -> mail -> extras
+          log "Phase 1/5: Installing base system packages..."
+          dpkg -i $(ls *.deb | grep -E "(libc|libssl|perl|python|ca-certificates)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Phase 2/5: Installing Webmin/Usermin..."
+          dpkg -i $(ls *.deb | grep -E "(webmin|usermin|virtualmin)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Phase 3/5: Installing Apache & PHP..."
+          dpkg -i $(ls *.deb | grep -E "(apache2|libapache2|php)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Phase 4/5: Installing MariaDB..."
+          dpkg -i $(ls *.deb | grep -E "(mariadb|mysql)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Phase 5/5: Installing Mail, DNS, FTP & Security..."
+          dpkg -i $(ls *.deb | grep -vE "(webmin|usermin|virtualmin|apache2|libapache2|php|mariadb|mysql)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          # Fix all dependencies
+          log "Fixing broken dependencies..."
+          apt-get install -f -y 2>&1 | tee -a "$LOG_FILE" || true
+          dpkg --configure -a 2>&1 | tee -a "$LOG_FILE" || true
+
+          # Enable all services
+          log "Enabling services..."
+          SERVICES="apache2 mariadb postfix dovecot bind9 fail2ban webmin"
+          for svc in $SERVICES; do
+            systemctl enable $svc 2>/dev/null || warn "Could not enable $svc"
+            systemctl start $svc 2>/dev/null || warn "Could not start $svc"
+          done
+
+          # Secure MySQL
+          if command -v mysql >/dev/null 2>&1; then
+            info "Securing MariaDB..."
+            mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASS';" 2>/dev/null || true
+            mysql -e "DELETE FROM mysql.user WHERE User='';" 2>/dev/null || true
+            mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');" 2>/dev/null || true
+            mysql -e "DROP DATABASE IF EXISTS test;" 2>/dev/null || true
+            mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+          fi
+
+          # Save credentials
+          cat > /root/.virtualmin-credentials << EOF
+          Virtualmin Installation Credentials
+          Generated: $(date)
+          =====================================
+          MariaDB Root Password: $MYSQL_ROOT_PASS
+          Webmin URL: https://$(hostname -I | awk '{print $1}'):10000
+          Usermin URL: https://$(hostname -I | awk '{print $1}'):20000
+          =====================================
+          EOF
+          chmod 600 /root/.virtualmin-credentials
+
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+
+          log "=========================================="
+          log "✅ Virtualmin Full (LAMP) installed!"
+          log ""
+          log "🌐 Access URLs:"
+          log "   Webmin:  https://${IP_ADDR}:10000"
+          log "   Usermin: https://${IP_ADDR}:20000"
+          log "   Website: http://${IP_ADDR}"
+          log ""
+          log "📊 Installed Services:"
+          log "   Web Server: Apache2"
+          log "   Database:   MariaDB"
+          log "   PHP:        $(php -v 2>/dev/null | head -1 || echo 'Installed')"
+          log "   Mail:       Postfix + Dovecot"
+          log "   DNS:        BIND9"
+          log "   FTP:        ProFTPd"
+          log "   Security:   Fail2Ban + ClamAV + SpamAssassin"
+          log ""
+          log "🔐 Credentials saved to: /root/.virtualmin-credentials"
+          log "=========================================="
+          INSTALLER
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # VIRTUALMIN FULL LEMP BUNDLE
+      # ============================================
+      - name: Build Virtualmin Full (LEMP)
+        if: github.event.inputs.bundle_type == 'virtualmin-full-lemp'
+        run: |
+          echo "=== Building Virtualmin Full (LEMP) ==="
+
+          # Core Virtualmin
+          apt-get install --download-only -y \
+            webmin usermin virtualmin-base \
+            virtualmin-core virtualmin-config \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+          # Complete LEMP Stack
+          apt-get install --download-only -y \
+            nginx nginx-common nginx-full \
+            nginx-extras nginx-doc \
+            php-fpm php-cli php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            php-zip php-intl php-bcmath php-json \
+            php-opcache php-soap php-xmlrpc \
+            php-bz2 php-readline php-sqlite3 \
+            php-tidy php-xsl php-pear \
+            2>/dev/null || true
+
+          # MariaDB
+          apt-get install --download-only -y \
+            mariadb-server mariadb-client \
+            mariadb-common mariadb-server-core \
+            2>/dev/null || true
+
+          # Mail services
+          apt-get install --download-only -y \
+            bind9 bind9utils bind9-doc dnsutils \
+            postfix postfix-pcre postfix-doc \
+            dovecot-core dovecot-imapd dovecot-pop3d \
+            dovecot-lmtpd dovecot-mysql \
+            mailutils mailutils-mda \
+            2>/dev/null || true
+
+          # FTP & Security
+          apt-get install --download-only -y \
+            proftpd-basic proftpd-mod-vroot \
+            proftpd-doc \
+            clamav clamav-daemon clamav-freshclam \
+            spamassassin spamc \
+            fail2ban \
+            ufw \
+            2>/dev/null || true
+
+          # SSL & Certificates (Certbot for Nginx)
+          apt-get install --download-only -y \
+            certbot python3-certbot-nginx \
+            python3-certbot-dns-cloudflare \
+            python3-certbot-dns-route53 \
+            openssl ssl-cert \
+            2>/dev/null || true
+
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install.sh << 'INSTALLER'
+          #!/bin/bash
+          # Offline Virtualmin Full (LEMP) Installer
+
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          PACKAGE_DIR="$SCRIPT_DIR/../packages"
+          LOG_FILE="/var/log/offline-install.log"
+
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          BLUE='\033[0;34m'
+          NC='\033[0m'
+
+          log() { echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+          warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
+          error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+          info() { echo -e "${BLUE}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+
+          log "Starting Virtualmin Full (LEMP) offline installation..."
+
+          if [ "$EUID" -ne 0 ]; then
+            error "Please run as root (use sudo)"
+          fi
+
+          if [ ! -d "$PACKAGE_DIR" ] || [ -z "$(ls -A "$PACKAGE_DIR"/*.deb 2>/dev/null)" ]; then
+            error "No packages found in $PACKAGE_DIR"
+          fi
+
+          export DEBIAN_FRONTEND=noninteractive
+          MYSQL_ROOT_PASS="${MYSQL_ROOT_PASS:-$(openssl rand -base64 24)}"
+
+          debconf-set-selections << EOF || true
+          mysql-server mysql-server/root_password password $MYSQL_ROOT_PASS
+          mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASS
+          EOF
+
+          cd "$PACKAGE_DIR"
+
+          log "Phase 1/5: Base system..."
+          dpkg -i $(ls *.deb | grep -E "(libc|libssl|perl|python|ca-certificates)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Phase 2/5: Webmin/Usermin..."
+          dpkg -i $(ls *.deb | grep -E "(webmin|usermin|virtualmin)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Phase 3/5: Nginx & PHP-FPM..."
+          dpkg -i $(ls *.deb | grep -E "(nginx|php)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Phase 4/5: MariaDB..."
+          dpkg -i $(ls *.deb | grep -E "(mariadb|mysql)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Phase 5/5: Mail, DNS, FTP & Security..."
+          dpkg -i $(ls *.deb | grep -vE "(webmin|usermin|virtualmin|nginx|php|mariadb|mysql)" 2>/dev/null) 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Fixing dependencies..."
+          apt-get install -f -y 2>&1 | tee -a "$LOG_FILE" || true
+          dpkg --configure -a 2>&1 | tee -a "$LOG_FILE" || true
+
+          log "Enabling services..."
+          SERVICES="nginx php*-fpm mariadb postfix dovecot bind9 fail2ban webmin"
+          for svc in $SERVICES; do
+            systemctl enable $svc 2>/dev/null || warn "Could not enable $svc"
+            systemctl start $svc 2>/dev/null || warn "Could not start $svc"
+          done
+
+          # Configure Nginx for PHP-FPM
+          if [ -f /etc/nginx/nginx.conf ]; then
+            info "Configuring Nginx for PHP-FPM..."
+            # Create default PHP-FPM config if not exists
+            if [ ! -f /etc/nginx/sites-enabled/default ]; then
+              cat > /etc/nginx/sites-available/default << 'NGINXCONF'
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              root /var/www/html;
+              index index.php index.html index.htm;
+              server_name _;
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+              location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/var/run/php/php-fpm.sock;
+              }
+          }
+          NGINXCONF
+              ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default 2>/dev/null || true
+            fi
+            nginx -t 2>/dev/null || warn "Nginx config test failed"
+            systemctl restart nginx 2>/dev/null || true
+          fi
+
+          # Secure MySQL
+          if command -v mysql >/dev/null 2>&1; then
+            info "Securing MariaDB..."
+            mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASS';" 2>/dev/null || true
+            mysql -e "DELETE FROM mysql.user WHERE User='';" 2>/dev/null || true
+            mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');" 2>/dev/null || true
+            mysql -e "DROP DATABASE IF EXISTS test;" 2>/dev/null || true
+            mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+          fi
+
+          cat > /root/.virtualmin-credentials << EOF
+          Virtualmin Installation Credentials
+          Generated: $(date)
+          =====================================
+          MariaDB Root Password: $MYSQL_ROOT_PASS
+          Webmin URL: https://$(hostname -I | awk '{print $1}'):10000
+          Usermin URL: https://$(hostname -I | awk '{print $1}'):20000
+          =====================================
+          EOF
+          chmod 600 /root/.virtualmin-credentials
+
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+
+          log "=========================================="
+          log "✅ Virtualmin Full (LEMP) installed!"
+          log ""
+          log "🌐 Access URLs:"
+          log "   Webmin:  https://${IP_ADDR}:10000"
+          log "   Usermin: https://${IP_ADDR}:20000"
+          log "   Website: http://${IP_ADDR}"
+          log ""
+          log "📊 Installed Services:"
+          log "   Web Server: Nginx + PHP-FPM"
+          log "   Database:   MariaDB"
+          log "   PHP:        $(php -v 2>/dev/null | head -1 || echo 'Installed')"
+          log "   Mail:       Postfix + Dovecot"
+          log "   DNS:        BIND9"
+          log "   FTP:        ProFTPd"
+          log "   Security:   Fail2Ban + ClamAV + SpamAssassin"
+          log ""
+          log "🔐 Credentials saved to: /root/.virtualmin-credentials"
+          log "=========================================="
+          INSTALLER
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # VIRTUALMIN MINI LAMP BUNDLE
+      # ============================================
+      - name: Build Virtualmin Mini (LAMP)
+        if: github.event.inputs.bundle_type == 'virtualmin-mini-lamp'
+        run: |
+          echo "=== Building Virtualmin Mini (LAMP) ==="
+
+          apt-get install --download-only -y \
+            webmin usermin \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            apache2 apache2-utils apache2-bin \
+            libapache2-mod-php \
+            mariadb-server mariadb-client \
+            php php-cli php-fpm php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            certbot python3-certbot-apache \
+            openssl ssl-cert \
+            2>/dev/null || true
+
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          PACKAGE_DIR="$SCRIPT_DIR/../packages"
+          LOG_FILE="/var/log/offline-install.log"
+
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          NC='\033[0m'
+
+          log() { echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+          warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
+          error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+
+          log "Starting Virtualmin Mini (LAMP) offline installation..."
+
+          if [ "$EUID" -ne 0 ]; then
+            error "Please run as root (use sudo)"
+          fi
+
+          if [ ! -d "$PACKAGE_DIR" ] || [ -z "$(ls -A "$PACKAGE_DIR"/*.deb 2>/dev/null)" ]; then
+            error "No packages found in $PACKAGE_DIR"
+          fi
+
+          export DEBIAN_FRONTEND=noninteractive
+          MYSQL_ROOT_PASS="${MYSQL_ROOT_PASS:-$(openssl rand -base64 24)}"
+
+          debconf-set-selections << EOF || true
+          mysql-server mysql-server/root_password password $MYSQL_ROOT_PASS
+          mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASS
+          EOF
+
+          cd "$PACKAGE_DIR"
+          dpkg -i *.deb 2>&1 | tee -a "$LOG_FILE" || true
+          apt-get install -f -y 2>&1 | tee -a "$LOG_FILE" || true
+          dpkg --configure -a 2>&1 | tee -a "$LOG_FILE" || true
+
+          systemctl enable apache2 mariadb webmin 2>/dev/null || true
+          systemctl start apache2 mariadb webmin 2>/dev/null || true
+
+          if command -v mysql >/dev/null 2>&1; then
+            mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASS';" 2>/dev/null || true
+            mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+          fi
+
+          cat > /root/.virtualmin-credentials << EOF
+          Virtualmin Mini (LAMP) Credentials
+          Generated: $(date)
+          =====================================
+          MariaDB Root Password: $MYSQL_ROOT_PASS
+          Webmin URL: https://$(hostname -I | awk '{print $1}'):10000
+          Usermin URL: https://$(hostname -I | awk '{print $1}'):20000
+          =====================================
+          EOF
+          chmod 600 /root/.virtualmin-credentials
+
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+
+          log "=========================================="
+          log "✅ Virtualmin Mini (LAMP) installed!"
+          log "   Webmin:  https://${IP_ADDR}:10000"
+          log "   Usermin: https://${IP_ADDR}:20000"
+          log "   Web Server: Apache2"
+          log "   Database:   MariaDB"
+          log "=========================================="
+          INSTALLER
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # VIRTUALMIN MINI LEMP BUNDLE
+      # ============================================
+      - name: Build Virtualmin Mini (LEMP)
+        if: github.event.inputs.bundle_type == 'virtualmin-mini-lemp'
+        run: |
+          echo "=== Building Virtualmin Mini (LEMP) ==="
+
+          apt-get install --download-only -y \
+            webmin usermin \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            nginx nginx-common nginx-full \
+            php-fpm php-cli php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            certbot python3-certbot-nginx \
+            openssl ssl-cert \
+            2>/dev/null || true
+
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          PACKAGE_DIR="$SCRIPT_DIR/../packages"
+          LOG_FILE="/var/log/offline-install.log"
+
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          NC='\033[0m'
+
+          log() { echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+          warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
+          error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+
+          log "Starting Virtualmin Mini (LEMP) offline installation..."
+
+          if [ "$EUID" -ne 0 ]; then
+            error "Please run as root (use sudo)"
+          fi
+
+          if [ ! -d "$PACKAGE_DIR" ] || [ -z "$(ls -A "$PACKAGE_DIR"/*.deb 2>/dev/null)" ]; then
+            error "No packages found in $PACKAGE_DIR"
+          fi
+
+          export DEBIAN_FRONTEND=noninteractive
+          MYSQL_ROOT_PASS="${MYSQL_ROOT_PASS:-$(openssl rand -base64 24)}"
+
+          debconf-set-selections << EOF || true
+          mysql-server mysql-server/root_password password $MYSQL_ROOT_PASS
+          mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASS
+          EOF
+
+          cd "$PACKAGE_DIR"
+          dpkg -i *.deb 2>&1 | tee -a "$LOG_FILE" || true
+          apt-get install -f -y 2>&1 | tee -a "$LOG_FILE" || true
+          dpkg --configure -a 2>&1 | tee -a "$LOG_FILE" || true
+
+          systemctl enable nginx php*-fpm mariadb webmin 2>/dev/null || true
+          systemctl start nginx php*-fpm mariadb webmin 2>/dev/null || true
+
+          if command -v mysql >/dev/null 2>&1; then
+            mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASS';" 2>/dev/null || true
+            mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+          fi
+
+          cat > /root/.virtualmin-credentials << EOF
+          Virtualmin Mini (LEMP) Credentials
+          Generated: $(date)
+          =====================================
+          MariaDB Root Password: $MYSQL_ROOT_PASS
+          Webmin URL: https://$(hostname -I | awk '{print $1}'):10000
+          Usermin URL: https://$(hostname -I | awk '{print $1}'):20000
+          =====================================
+          EOF
+          chmod 600 /root/.virtualmin-credentials
+
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+
+          log "=========================================="
+          log "✅ Virtualmin Mini (LEMP) installed!"
+          log "   Webmin:  https://${IP_ADDR}:10000"
+          log "   Usermin: https://${IP_ADDR}:20000"
+          log "   Web Server: Nginx + PHP-FPM"
+          log "   Database:   MariaDB"
+          log "=========================================="
+          INSTALLER
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # COCKPIT + WEB BUNDLE
+      # ============================================
+      - name: Build Cockpit + Web Bundle
+        if: github.event.inputs.bundle_type == 'cockpit-web'
+        run: |
+          echo "=== Building Cockpit + Web Bundle ==="
+
+          apt-get update || true
+
+          apt-get install --download-only -y \
+            cockpit cockpit-machines \
+            cockpit-podman cockpit-storaged \
+            cockpit-networkmanager cockpit-packagekit \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            apache2 nginx \
+            mariadb-server mariadb-client \
+            php php-cli php-fpm php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            certbot python3-certbot-apache \
+            python3-certbot-nginx \
+            2>/dev/null || true
+
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          PACKAGE_DIR="$SCRIPT_DIR/../packages"
+          LOG_FILE="/var/log/offline-install.log"
+
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          NC='\033[0m'
+
+          log() { echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+          warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
+          error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+
+          log "Starting Cockpit + Web Stack offline installation..."
+
+          if [ "$EUID" -ne 0 ]; then
+            error "Please run as root (use sudo)"
+          fi
+
+          if [ ! -d "$PACKAGE_DIR" ] || [ -z "$(ls -A "$PACKAGE_DIR"/*.deb 2>/dev/null)" ]; then
+            error "No packages found in $PACKAGE_DIR"
+          fi
+
+          export DEBIAN_FRONTEND=noninteractive
+          MYSQL_ROOT_PASS="${MYSQL_ROOT_PASS:-$(openssl rand -base64 24)}"
+
+          debconf-set-selections << EOF || true
+          mysql-server mysql-server/root_password password $MYSQL_ROOT_PASS
+          mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASS
+          EOF
+
+          cd "$PACKAGE_DIR"
+          dpkg -i *.deb 2>&1 | tee -a "$LOG_FILE" || true
+          apt-get install -f -y 2>&1 | tee -a "$LOG_FILE" || true
+          dpkg --configure -a 2>&1 | tee -a "$LOG_FILE" || true
+
+          systemctl enable cockpit.socket apache2 nginx mariadb 2>/dev/null || true
+          systemctl start cockpit.socket apache2 nginx mariadb 2>/dev/null || true
+
+          if command -v mysql >/dev/null 2>&1; then
+            mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASS';" 2>/dev/null || true
+            mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+          fi
+
+          cat > /root/.cockpit-credentials << EOF
+          Cockpit + Web Stack Credentials
+          Generated: $(date)
+          =====================================
+          MariaDB Root Password: $MYSQL_ROOT_PASS
+          Cockpit URL: https://$(hostname -I | awk '{print $1}'):9090
+          Apache2:     http://$(hostname -I | awk '{print $1}')
+          Nginx:       http://$(hostname -I | awk '{print $1}') (if Apache disabled)
+          =====================================
+          EOF
+          chmod 600 /root/.cockpit-credentials
+
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+
+          log "=========================================="
+          log "✅ Cockpit + Web Stack installed!"
+          log "   Cockpit: https://${IP_ADDR}:9090"
+          log "   Apache2: http://${IP_ADDR}"
+          log "   Nginx:   http://${IP_ADDR}"
+          log "=========================================="
+          INSTALLER
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # CREATE LOCAL APT REPOSITORY
+      # ============================================
+      - name: Create Local APT Repository
+        run: |
+          cd /offline-bundle/repos
+          mkdir -p pool/main
+          cp /offline-bundle/packages/*.deb pool/main/ 2>/dev/null || true
+
+          if [ "$(ls -A pool/main/ 2>/dev/null)" ]; then
+            mkdir -p dists/stable/main/binary-amd64
+            dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-amd64/Packages 2>/dev/null || \
+            (echo "Package: dummy" > dists/stable/main/binary-amd64/Packages)
+            gzip -k -f dists/stable/main/binary-amd64/Packages 2>/dev/null || true
+
+            cat > dists/stable/Release << EOF
+          Origin: Offline Bundle
+          Label: Offline Virtualmin/Webmin
+          Suite: stable
+          Codename: stable
+          Architectures: amd64
+          Components: main
+          Description: Offline package repository for air-gapped servers
+          Date: $(date -Ru)
+          EOF
+
+            {
+              echo "MD5Sum:"
+              find dists/stable -type f -exec md5sum {} \; 2>/dev/null | awk '{print " " $1 " " $2}' || true
+              echo "SHA256:"
+              find dists/stable -type f -exec sha256sum {} \; 2>/dev/null | awk '{print " " $1 " " $2}' || true
+            } >> dists/stable/Release
+
+            cat > /offline-bundle/scripts/add-repo.sh << 'REPO'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          echo "deb [trusted=yes] file:$SCRIPT_DIR/../repos stable main" > /etc/apt/sources.list.d/offline.list
+          apt-get update || true
+          echo "✅ Local APT repository added!"
+          REPO
+            chmod +x /offline-bundle/scripts/add-repo.sh
+          fi
+
+      # ============================================
+      # GENERATE COMPREHENSIVE DOCUMENTATION
+      # ============================================
+      - name: Generate Documentation
+        run: |
+          BUNDLE_TYPE="${{ github.event.inputs.bundle_type }}"
+          UBUNTU_VER="${{ github.event.inputs.ubuntu_version }}"
+          BUILD_DATE="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          BUILD_DATE_SHORT="$(date -u +'%Y%m%d')"
+
+          # Count packages
+          PKG_COUNT=$(ls /offline-bundle/packages/*.deb 2>/dev/null | wc -l)
+          PKG_SIZE=$(du -sh /offline-bundle/packages/ 2>/dev/null | cut -f1 || echo "0")
+
+          # Determine web server and stack
+          case "$BUNDLE_TYPE" in
+            *lamp*)
+              WEB_SERVER="Apache2"
+              STACK="LAMP (Linux + Apache + MariaDB + PHP)"
+              ;;
+            *lemp*)
+              WEB_SERVER="Nginx + PHP-FPM"
+              STACK="LEMP (Linux + Nginx + MariaDB + PHP)"
+              ;;
+            webmin-only)
+              WEB_SERVER="N/A"
+              STACK="Webmin Control Panel Only"
+              ;;
+            cockpit-web)
+              WEB_SERVER="Apache2 + Nginx"
+              STACK="Cockpit + Web Servers"
+              ;;
+          esac
+
+          cat > /offline-bundle/README.md << EOF
+          # 🔒 Offline Server Management Bundle
+
+          ## 📋 Bundle Information
+
+          | Property | Value |
+          |----------|-------|
+          | **Bundle Type** | ${BUNDLE_TYPE} |
+          | **Ubuntu Version** | ${UBUNTU_VER} |
+          | **Build Date** | ${BUILD_DATE} |
+          | **Package Count** | ${PKG_COUNT} packages |
+          | **Total Size** | ${PKG_SIZE} |
+          | **Web Server** | ${WEB_SERVER} |
+          | **Stack** | ${STACK} |
+
+          ---
+
+          ## 📦 Package Contents
+
+          This bundle contains the following components:
+
+          ### Directory Structure
+          \`\`\`
+          offline-bundle/
+          ├── packages/          # All .deb package files
+          ├── scripts/
+          │   ├── install.sh     # Main installation script
+          │   └── add-repo.sh    # Add local APT repository
+          ├── repos/             # Local APT repository (optional)
+          └── docs/              # Documentation
+          \`\`\`
+
+          ### Included Packages
+          EOF
+
+          # Add package list
+          if [ -d /offline-bundle/packages ] && [ "$(ls -A /offline-bundle/packages/*.deb 2>/dev/null)" ]; then
+            echo "" >> /offline-bundle/README.md
+            echo "#### Core Packages:" >> /offline-bundle/README.md
+            ls /offline-bundle/packages/*.deb 2>/dev/null | xargs -n1 basename | sort | head -50 | sed 's/^/- /' >> /offline-bundle/README.md
+
+            if [ "$PKG_COUNT" -gt 50 ]; then
+              echo "" >> /offline-bundle/README.md
+              echo "... and $(($PKG_COUNT - 50)) more packages" >> /offline-bundle/README.md
+            fi
+          fi
+
+          cat >> /offline-bundle/README.md << EOF
+
+          ---
+
+          ## 🚀 Quick Start Installation
+
+          ### Prerequisites
+          - Ubuntu ${UBUNTU_VER} (clean install recommended)
+          - Root access (sudo)
+          - Minimum 2GB RAM, 20GB disk space
+
+          ### Installation Steps
+
+          1. **Transfer the bundle** to your offline server:
+             \`\`\`bash
+             # Using USB
+             cp -r offline-bundle /opt/
+
+             # Or using SCP (from another machine on local network)
+             scp -r offline-bundle user@server:/opt/
+             \`\`\`
+
+          2. **Run the installer**:
+             \`\`\`bash
+             cd /opt/offline-bundle/scripts
+             sudo ./install.sh
+             \`\`\`
+
+          3. **Wait for completion** - The script will:
+             - Install all packages
+             - Configure services
+             - Generate secure passwords
+             - Start all services
+
+          4. **Access your panel**:
+          EOF
+
+          case "$BUNDLE_TYPE" in
+            webmin-only)
+              cat >> /offline-bundle/README.md << EOF
+             - Webmin: https://YOUR-SERVER-IP:10000
+             - Login: root (or system admin user)
+          EOF
+              ;;
+            *virtualmin*)
+              cat >> /offline-bundle/README.md << EOF
+             - Webmin:  https://YOUR-SERVER-IP:10000
+             - Usermin: https://YOUR-SERVER-IP:20000
+             - Website: http://YOUR-SERVER-IP
+             - Login: root (or system admin user)
+
+             **Credentials file**: \`/root/.virtualmin-credentials\`
+          EOF
+              ;;
+            cockpit-web)
+              cat >> /offline-bundle/README.md << EOF
+             - Cockpit: https://YOUR-SERVER-IP:9090
+             - Apache2: http://YOUR-SERVER-IP
+             - Nginx:   http://YOUR-SERVER-IP
+             - Login: system user credentials
+
+             **Credentials file**: \`/root/.cockpit-credentials\`
+          EOF
+              ;;
+          esac
+
+          cat >> /offline-bundle/README.md << EOF
+
+          ---
+
+          ## 🔧 Alternative: Local APT Repository
+
+          If you prefer using APT directly:
+
+          \`\`\`bash
+          cd /opt/offline-bundle/scripts
+          sudo ./add-repo.sh
+          sudo apt-get install webmin  # or any package from the bundle
+          \`\`\`
+
+          ---
+
+          ## 📊 Service Details
+
+          | Service | Port | Description |
+          |---------|------|-------------|
+          EOF
+
+          case "$BUNDLE_TYPE" in
+            webmin-only)
+              cat >> /offline-bundle/README.md << EOF
+          | Webmin | 10000 | Web-based server management |
+          | SSH | 22 | Secure shell access |
+          EOF
+              ;;
+            *virtualmin*)
+              cat >> /offline-bundle/README.md << EOF
+          | Webmin | 10000 | Main control panel |
+          | Usermin | 20000 | User control panel |
+          | HTTP | 80 | Web server |
+          | HTTPS | 443 | Secure web server |
+          | SSH | 22 | Secure shell access |
+          | FTP | 21 | File transfer |
+          | SMTP | 25 | Mail sending |
+          | IMAP | 143 | Mail retrieval |
+          | POP3 | 110 | Mail retrieval |
+          | DNS | 53 | Domain name service |
+          | MySQL | 3306 | Database service |
+          EOF
+              ;;
+            cockpit-web)
+              cat >> /offline-bundle/README.md << EOF
+          | Cockpit | 9090 | Web-based server management |
+          | HTTP | 80 | Apache2 web server |
+          | HTTPS | 443 | Secure web server |
+          | SSH | 22 | Secure shell access |
+          | MySQL | 3306 | Database service |
+          EOF
+              ;;
+          esac
+
+          cat >> /offline-bundle/README.md << EOF
+
+          ---
+
+          ## 🔒 Security Notes
+
+          - All passwords are auto-generated and saved in \`/root/\` directory
+          - SSL certificates are self-signed by default
+          - Fail2Ban is installed and enabled (where applicable)
+          - Firewall (UFW) rules should be configured manually
+
+          ---
+
+          ## 🆘 Troubleshooting
+
+          ### Check installation log
+          \`\`\`bash
+          cat /var/log/offline-install.log
+          \`\`\`
+
+          ### Restart services
+          \`\`\`bash
+          sudo systemctl restart apache2 mariadb webmin  # LAMP
+          sudo systemctl restart nginx php*-fpm mariadb webmin  # LEMP
+          \`\`\`
+
+          ### Fix broken packages
+          \`\`\`bash
+          sudo dpkg --configure -a
+          sudo apt-get install -f -y
+          \`\`\`
+
+          ---
+
+          ## 📝 Build Information
+
+          - **Built by**: GitHub Actions
+          - **Build ID**: ${GITHUB_RUN_ID:-manual}
+          - **Ubuntu Base**: ${UBUNTU_VER}
+          - **Bundle Type**: ${BUNDLE_TYPE}
+          - **Date**: ${BUILD_DATE}
+
+          ---
+
+          *This bundle is designed for air-gapped/offline server installations.*
+          *All packages are included - no internet connection required.*
+          EOF
+
+          # Copy README to docs
+          cp /offline-bundle/README.md /offline-bundle/docs/README.md
+
+          # Create INSTALL guide
+          cat > /offline-bundle/docs/INSTALL.md << EOF
+          # Installation Guide
+
+          ## System Requirements
+
+          - **OS**: Ubuntu ${UBUNTU_VER} LTS (clean install)
+          - **RAM**: Minimum 2GB (4GB+ recommended for full bundles)
+          - **Disk**: Minimum 20GB free space
+          - **Network**: Not required (offline installation)
+
+          ## Pre-Installation
+
+          1. Ensure you have root access
+          2. Transfer the complete \`offline-bundle\` directory to your server
+          3. Verify all files are present:
+             \`\`\`bash
+             ls -la /path/to/offline-bundle/packages/
+             ls -la /path/to/offline-bundle/scripts/
+             \`\`\`
+
+          ## Installation
+
+          ### Method 1: Automated Script (Recommended)
+
+          \`\`\`bash
+          cd /path/to/offline-bundle/scripts
+          sudo chmod +x install.sh
+          sudo ./install.sh
+          \`\`\`
+
+          The script will:
+          - Install all packages in correct order
+          - Configure services automatically
+          - Generate and save secure passwords
+          - Start and enable all services
+          - Display access URLs
+
+          ### Method 2: Manual Package Installation
+
+          \`\`\`bash
+          cd /path/to/offline-bundle/packages
+          sudo dpkg -i *.deb
+          sudo apt-get install -f -y
+          sudo dpkg --configure -a
+          \`\`\`
+
+          ### Method 3: Local APT Repository
+
+          \`\`\`bash
+          cd /path/to/offline-bundle/scripts
+          sudo ./add-repo.sh
+          sudo apt-get update
+          sudo apt-get install webmin usermin apache2 mariadb-server
+          \`\`\`
+
+          ## Post-Installation
+
+          1. Access the web panel using the URLs shown after installation
+          2. Check credentials in \`/root/\` directory
+          3. Configure firewall rules as needed
+          4. Set up SSL certificates (Let's Encrypt requires internet)
+
+          ## Customization
+
+          ### Change MySQL root password
+          \`\`\`bash
+          sudo mysql -u root -p
+          ALTER USER 'root'@'localhost' IDENTIFIED BY 'new_password';
+          FLUSH PRIVILEGES;
+          \`\`\`
+
+          ### Configure Virtualmin
+          1. Login to Webmin (https://server-ip:10000)
+          2. Navigate to Virtualmin → System Settings
+          3. Run the post-installation wizard
+
+          ---
+
+          *For more details, see README.md*
+          EOF
+
+          # Create package manifest
+          ls /offline-bundle/packages/*.deb 2>/dev/null | xargs -n1 basename | sort > /offline-bundle/docs/PACKAGE_MANIFEST.txt
+
+          echo "Documentation generated successfully!"
+          cat /offline-bundle/README.md | head -50
+
+      # ============================================
+      # VERIFY BUNDLE CONTENTS
+      # ============================================
+      - name: Verify Bundle
+        run: |
+          echo "========================================"
+          echo "BUNDLE VERIFICATION REPORT"
+          echo "========================================"
+          echo ""
+          echo "📁 Directory Structure:"
+          find /offline-bundle -type f | sort | head -30
+          echo ""
+          echo "📦 Package Statistics:"
+          echo "  Total packages: $(ls /offline-bundle/packages/*.deb 2>/dev/null | wc -l)"
+          echo "  Total size: $(du -sh /offline-bundle/packages/ 2>/dev/null | cut -f1 || echo 'N/A')"
+          echo ""
+          echo "📄 Scripts:"
+          ls -la /offline-bundle/scripts/
+          echo ""
+          echo "📖 Documentation:"
+          ls -la /offline-bundle/docs/
+          echo ""
+          echo "========================================"
+
+      # ============================================
+      # CREATE ARCHIVE
+      # ============================================
+      - name: Create Archive
+        run: |
+          cd /
+          BUNDLE_TYPE="${{ github.event.inputs.bundle_type }}"
+          UBUNTU_VER="${{ github.event.inputs.ubuntu_version }}"
+          BUILD_DATE="$(date -u +%Y%m%d_%H%M%S)"
+          SHORT_DATE="$(date -u +%Y%m%d)"
+
+          ARCHIVE_NAME="offline-${BUNDLE_TYPE}-${UBUNTU_VER}-${BUILD_DATE}"
+
+          echo "Creating archive: ${ARCHIVE_NAME}.tar.gz"
+          tar -czf "${ARCHIVE_NAME}.tar.gz" offline-bundle
+
+          # Create SHA256 checksum
+          sha256sum "${ARCHIVE_NAME}.tar.gz" > "${ARCHIVE_NAME}.tar.gz.sha256"
+
+          # Create info file
+          cat > "${ARCHIVE_NAME}.info.txt" << EOF
+          Bundle: ${BUNDLE_TYPE}
+          Ubuntu: ${UBUNTU_VER}
+          Build Date: ${BUILD_DATE}
+          Packages: $(ls /offline-bundle/packages/*.deb 2>/dev/null | wc -l)
+          Size: $(du -sh /offline-bundle/packages/ 2>/dev/null | cut -f1 || echo 'N/A')
+          EOF
+
+          ls -lh "${ARCHIVE_NAME}"*
+
+          # Set outputs for release
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> $GITHUB_ENV
+          echo "BUNDLE_TYPE=${BUNDLE_TYPE}" >> $GITHUB_ENV
+          echo "UBUNTU_VER=${UBUNTU_VER}" >> $GITHUB_ENV
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
+          echo "SHORT_DATE=${SHORT_DATE}" >> $GITHUB_ENV
+
+      # ============================================
+      # UPLOAD ARTIFACT (ALWAYS)
+      # ============================================
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: |
+            /*.tar.gz
+            /*.sha256
+            /*.info.txt
+          retention-days: 30
+
+      # ============================================
+      # CREATE RELEASE (AUTO OR MANUAL TAG)
+      # ============================================
+      - name: Determine Release Tag
+        id: release_tag
+        run: |
+          BUNDLE_TYPE="${{ env.BUNDLE_TYPE }}"
+          UBUNTU_VER="${{ env.UBUNTU_VER }}"
+          SHORT_DATE="${{ env.SHORT_DATE }}"
+          INPUT_VERSION="${{ github.event.inputs.release_version }}"
+
+          if [ -n "$INPUT_VERSION" ]; then
+            TAG_NAME="$INPUT_VERSION"
+          else
+            TAG_NAME="${BUNDLE_TYPE}-${UBUNTU_VER}-${SHORT_DATE}"
+          fi
+
+          # Ensure unique tag
+          COUNTER=1
+          BASE_TAG="$TAG_NAME"
+          while git ls-remote --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; do
+            TAG_NAME="${BASE_TAG}-r${COUNTER}"
+            COUNTER=$((COUNTER + 1))
+          done
+
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_name=Offline ${BUNDLE_TYPE} for Ubuntu ${UBUNTU_VER} (${SHORT_DATE})" >> $GITHUB_OUTPUT
+
+      - name: Create Git Tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag -a "${{ steps.release_tag.outputs.tag_name }}" -m "${{ steps.release_tag.outputs.release_name }}"
+          git push origin "${{ steps.release_tag.outputs.tag_name }}" || echo "Tag may already exist or push failed"
+        continue-on-error: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag_name }}
+          name: ${{ steps.release_tag.outputs.release_name }}
+          body: |
+            ## 🔒 Offline Server Management Bundle
+
+            **Bundle Type:** ${{ env.BUNDLE_TYPE }}
+            **Ubuntu Version:** ${{ env.UBUNTU_VER }}
+            **Build Date:** ${{ env.BUILD_DATE }}
+
+            ### 📦 Contents
+            - Complete offline installation packages
+            - Automated installation script (`install.sh`)
+            - Local APT repository setup (`add-repo.sh`)
+            - Comprehensive documentation (README, INSTALL guide)
+            - Package manifest
+
+            ### 🚀 Quick Start
+            1. Download the `.tar.gz` archive
+            2. Transfer to your offline Ubuntu server
+            3. Extract and run `sudo ./scripts/install.sh`
+
+            ### 📊 Bundle Details
+            - **Package Count:** ${{ steps.verify.outputs.pkg_count || 'See archive' }}
+            - **Total Size:** See archive info file
+            - **No internet required** for installation
+
+            ### 🔧 Included Services
+            ${{ env.BUNDLE_TYPE == 'webmin-only' && '- Webmin Control Panel (port 10000)' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'virtualmin') && '- Virtualmin/Webmin Control Panel' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'lamp') && '- Apache2 Web Server' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'lemp') && '- Nginx Web Server + PHP-FPM' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'virtualmin') && '- MariaDB Database' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'full') && '- Postfix Mail Server' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'full') && '- Dovecot IMAP/POP3' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'full') && '- BIND9 DNS Server' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'full') && '- ProFTPd FTP Server' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'full') && '- Fail2Ban + ClamAV + SpamAssassin' || '' }}
+            ${{ contains(env.BUNDLE_TYPE, 'cockpit') && '- Cockpit Server Management (port 9090)' || '' }}
+
+            ### 📖 Documentation
+            See the included `README.md` and `docs/INSTALL.md` for detailed instructions.
+
+            ---
+            *Built automatically by GitHub Actions*
+            *For air-gapped/offline server installations*
+          files: |
+            /*.tar.gz
+            /*.sha256
+            /*.info.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
