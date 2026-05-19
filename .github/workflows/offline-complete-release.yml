@@ -1,4 +1,4 @@
-name: Build Offline Virtualmin/Webmin Package Bundle (Complete + Release)
+name: Build Offline Virtualmin/Webmin Package Bundle (Fixed GPG + Release)
 
 on:
   workflow_dispatch:
@@ -49,66 +49,106 @@ jobs:
           mkdir -p /etc/apt/keyrings
 
       # ============================================
-      # SETUP REPOSITORIES WITH FALLBACK
+      # FIXED: SETUP REPOSITORIES WITH CORRECT GPG HANDLING
       # ============================================
-      - name: Setup Virtualmin/Webmin Repositories (3-Fallback)
+      - name: Setup Virtualmin/Webmin Repositories (Fixed)
         if: contains(github.event.inputs.bundle_type, 'virtualmin') || github.event.inputs.bundle_type == 'webmin-only'
         run: |
-          echo "=== Setting up repositories with fallback ==="
+          echo "=== Setting up repositories with corrected GPG handling ==="
           METHOD_SUCCESS=false
 
-          # Method 1: Virtualmin 7 GPG Key
-          if curl -fsSL --connect-timeout 15 --max-time 30 \
+          # Method 1: Download Virtualmin 7 GPG Key using gpg directly
+          echo "--- Method 1: Virtualmin 7 GPG Key ---"
+          if wget --timeout=15 --tries=2 -q \
             "https://software.virtualmin.com/lib/RPM-GPG-KEY-virtualmin-7" \
-            -o /etc/apt/keyrings/virtualmin-7.asc 2>/dev/null; then
-            if gpg --dry-run --import /etc/apt/keyrings/virtualmin-7.asc 2>/dev/null; then
-              echo "deb [signed-by=/etc/apt/keyrings/virtualmin-7.asc] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+            -O /tmp/virtualmin-7.key 2>/dev/null; then
+
+            # Convert and import to keyring format
+            gpg --dearmor < /tmp/virtualmin-7.key > /etc/apt/keyrings/virtualmin-7.gpg 2>/dev/null || \
+            gpg --batch --yes --dearmor -o /etc/apt/keyrings/virtualmin-7.gpg /tmp/virtualmin-7.key 2>/dev/null
+
+            if [ -f /etc/apt/keyrings/virtualmin-7.gpg ] && [ -s /etc/apt/keyrings/virtualmin-7.gpg ]; then
+              echo "deb [signed-by=/etc/apt/keyrings/virtualmin-7.gpg] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
                 > /etc/apt/sources.list.d/virtualmin.list
               METHOD_SUCCESS=true
-              echo "✅ Method 1: Virtualmin 7 key OK"
+              echo "✅ Method 1 SUCCESS: Virtualmin 7 key imported"
+            else
+              echo "⚠️ Method 1 FAILED: Could not create keyring"
             fi
+          else
+            echo "⚠️ Method 1 FAILED: Could not download key"
           fi
 
-          # Method 2: Virtualmin 6 GPG Key
+          # Method 2: Try Virtualmin 6 key
           if [ "$METHOD_SUCCESS" = false ]; then
-            if curl -fsSL --connect-timeout 15 --max-time 30 \
+            echo "--- Method 2: Virtualmin 6 GPG Key ---"
+            if wget --timeout=15 --tries=2 -q \
               "https://software.virtualmin.com/lib/RPM-GPG-KEY-virtualmin-6" \
-              -o /etc/apt/keyrings/virtualmin-7.asc 2>/dev/null; then
-              if gpg --dry-run --import /etc/apt/keyrings/virtualmin-7.asc 2>/dev/null; then
-                echo "deb [signed-by=/etc/apt/keyrings/virtualmin-7.asc] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+              -O /tmp/virtualmin-6.key 2>/dev/null; then
+
+              gpg --dearmor < /tmp/virtualmin-6.key > /etc/apt/keyrings/virtualmin-6.gpg 2>/dev/null || \
+              gpg --batch --yes --dearmor -o /etc/apt/keyrings/virtualmin-6.gpg /tmp/virtualmin-6.key 2>/dev/null
+
+              if [ -f /etc/apt/keyrings/virtualmin-6.gpg ] && [ -s /etc/apt/keyrings/virtualmin-6.gpg ]; then
+                echo "deb [signed-by=/etc/apt/keyrings/virtualmin-6.gpg] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
                   > /etc/apt/sources.list.d/virtualmin.list
                 METHOD_SUCCESS=true
-                echo "✅ Method 2: Virtualmin 6 key OK"
+                echo "✅ Method 2 SUCCESS: Virtualmin 6 key imported"
+              else
+                echo "⚠️ Method 2 FAILED: Could not create keyring"
               fi
+            else
+              echo "⚠️ Method 2 FAILED: Could not download key"
             fi
           fi
 
-          # Method 3: Webmin Key + Trusted Virtualmin
+          # Method 3: Webmin key with trusted Virtualmin
           if [ "$METHOD_SUCCESS" = false ]; then
-            if curl -fsSL --connect-timeout 15 --max-time 30 \
+            echo "--- Method 3: Webmin Developers Key ---"
+            if wget --timeout=15 --tries=2 -q \
               "https://download.webmin.com/jcameron-key.asc" \
-              -o /etc/apt/keyrings/webmin.asc 2>/dev/null; then
-              if gpg --dry-run --import /etc/apt/keyrings/webmin.asc 2>/dev/null; then
-                echo "deb [signed-by=/etc/apt/keyrings/webmin.asc] https://download.webmin.com/download/repository sarge contrib" \
+              -O /tmp/webmin.key 2>/dev/null; then
+
+              gpg --dearmor < /tmp/webmin.key > /etc/apt/keyrings/webmin.gpg 2>/dev/null || \
+              gpg --batch --yes --dearmor -o /etc/apt/keyrings/webmin.gpg /tmp/webmin.key 2>/dev/null
+
+              if [ -f /etc/apt/keyrings/webmin.gpg ] && [ -s /etc/apt/keyrings/webmin.gpg ]; then
+                echo "deb [signed-by=/etc/apt/keyrings/webmin.gpg] https://download.webmin.com/download/repository sarge contrib" \
                   > /etc/apt/sources.list.d/webmin.list
                 echo "deb [trusted=yes] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
                   > /etc/apt/sources.list.d/virtualmin.list
                 METHOD_SUCCESS=true
-                echo "✅ Method 3: Webmin key + trusted Virtualmin OK"
+                echo "✅ Method 3 SUCCESS: Webmin key + trusted Virtualmin"
+              else
+                echo "⚠️ Method 3 FAILED: Could not create keyring"
               fi
+            else
+              echo "⚠️ Method 3 FAILED: Could not download key"
             fi
           fi
 
-          # Fallback: No GPG
+          # Final Fallback: No GPG verification
           if [ "$METHOD_SUCCESS" = false ]; then
+            echo "--- FALLBACK: No GPG verification ---"
             echo "deb [trusted=yes] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
               > /etc/apt/sources.list.d/virtualmin.list
             echo "deb [trusted=yes] https://download.webmin.com/download/repository sarge contrib" \
               > /etc/apt/sources.list.d/webmin.list
-            echo "⚠️ FALLBACK: No GPG verification"
+            echo "⚠️ FALLBACK ACTIVE: No GPG verification - packages will still download"
           fi
 
-          apt-get update || echo "Some repos failed, continuing..."
+          # Update package lists
+          echo "=== Updating package lists ==="
+          apt-get update 2>&1 | tee /tmp/apt-update.log || {
+            echo "Some repositories had warnings, checking if we can continue..."
+            # Check if we got package lists despite warnings
+            if grep -q "Get:" /tmp/apt-update.log || grep -q "Hit:" /tmp/apt-update.log; then
+              echo "✅ Repositories accessible, continuing with download..."
+            else
+              echo "❌ Critical repository failure"
+              exit 1
+            fi
+          }
 
       # ============================================
       # DOWNLOAD ALL DEPENDENCIES COMPLETELY
@@ -555,7 +595,6 @@ jobs:
           # Configure Nginx for PHP-FPM
           if [ -f /etc/nginx/nginx.conf ]; then
             info "Configuring Nginx for PHP-FPM..."
-            # Create default PHP-FPM config if not exists
             if [ ! -f /etc/nginx/sites-enabled/default ]; then
               cat > /etc/nginx/sites-available/default << 'NGINXCONF'
           server {
