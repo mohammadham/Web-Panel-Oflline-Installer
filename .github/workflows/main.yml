@@ -1,0 +1,314 @@
+
+# Create a comprehensive GitHub Actions workflow for offline package preparation
+# and a detailed comparison table
+
+workflow_content = '''name: Build Offline Virtualmin/Webmin Package Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu_version:
+        description: 'Ubuntu Version (jammy/noble)'
+        required: true
+        default: 'jammy'
+        type: choice
+        options:
+          - jammy
+          - noble
+      bundle_type:
+        description: 'Bundle Type'
+        required: true
+        default: 'virtualmin-full'
+        type: choice
+        options:
+          - webmin-only
+          - virtualmin-full
+          - virtualmin-mini
+          - cockpit-web
+
+jobs:
+  build-offline-bundle:
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ github.event.inputs.ubuntu_version }}
+    
+    steps:
+      - name: Setup Environment
+        run: |
+          apt-get update
+          apt-get install -y wget curl gnupg2 dpkg-dev apt-utils
+          mkdir -p /offline-bundle/packages
+          mkdir -p /offline-bundle/scripts
+          mkdir -p /offline-bundle/repos
+
+      # ============================================
+      # WEBMIN ONLY BUNDLE
+      # ============================================
+      - name: Download Webmin + Dependencies
+        if: github.event.inputs.bundle_type == 'webmin-only'
+        run: |
+          # Add Webmin repository
+          wget -qO - https://download.webmin.com/jcameron-key.asc | apt-key add -
+          echo "deb https://download.webmin.com/download/repository sarge contrib" > /etc/apt/sources.list.d/webmin.list
+          apt-get update
+          
+          # Download Webmin and all dependencies
+          apt-get install --download-only -y webmin
+          
+          # Also download common dependencies explicitly
+          apt-get install --download-only -y \
+            perl libnet-ssleay-perl openssl \
+            libauthen-pam-perl libpam-runtime \
+            libio-pty-perl apt-show-versions python3 \
+            unzip shared-mime-info
+          
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/
+          
+          # Create install script
+          cat > /offline-bundle/scripts/install.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages"
+          
+          echo "Installing Webmin and dependencies..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          
+          echo "Webmin installed! Access: https://$(hostname -I | awk '{print $1}'):10000"
+          EOF
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # VIRTUALMIN FULL BUNDLE (LAMP Stack)
+      # ============================================
+      - name: Download Virtualmin Full + Dependencies
+        if: github.event.inputs.bundle_type == 'virtualmin-full'
+        run: |
+          # Add Virtualmin repository
+          wget -qO - https://software.virtualmin.com/lib/RPM-GPG-KEY-virtualmin-7 | apt-key add -
+          wget -qO - https://software.virtualmin.com/lib/RPM-GPG-KEY-webmin-developers | apt-key add -
+          echo "deb https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" > /etc/apt/sources.list.d/virtualmin.list
+          apt-get update
+          
+          # Download Virtualmin core packages
+          apt-get install --download-only -y \
+            webmin usermin virtualmin-base \
+            virtualmin-core virtualmin-config
+          
+          # Download LAMP stack dependencies
+          apt-get install --download-only -y \
+            apache2 apache2-utils apache2-bin \
+            mariadb-server mariadb-client \
+            php php-cli php-fpm php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            php-zip php-intl php-bcmath php-json \
+            bind9 bind9utils dnsutils \
+            postfix postfix-pcre \
+            dovecot-core dovecot-imapd dovecot-pop3d \
+            proftpd-basic proftpd-mod-vroot \
+            clamav clamav-daemon \
+            spamassassin \
+            fail2ban \
+            certbot python3-certbot-apache
+          
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/
+          
+          # Create install script
+          cat > /offline-bundle/scripts/install.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages"
+          
+          echo "Installing Virtualmin (Full LAMP Stack) and dependencies..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          
+          # Enable services
+          systemctl enable apache2 mariadb postfix dovecot bind9 fail2ban
+          
+          echo "Virtualmin installed!"
+          echo "Webmin: https://$(hostname -I | awk '{print $1}'):10000"
+          echo "Usermin: https://$(hostname -I | awk '{print $1}'):20000"
+          EOF
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # VIRTUALMIN MINI BUNDLE (Web Only)
+      # ============================================
+      - name: Download Virtualmin Mini
+        if: github.event.inputs.bundle_type == 'virtualmin-mini'
+        run: |
+          # Add repositories
+          wget -qO - https://software.virtualmin.com/lib/RPM-GPG-KEY-virtualmin-7 | apt-key add -
+          wget -qO - https://software.virtualmin.com/lib/RPM-GPG-KEY-webmin-developers | apt-key add -
+          echo "deb https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" > /etc/apt/sources.list.d/virtualmin.list
+          apt-get update
+          
+          # Download minimal web stack
+          apt-get install --download-only -y \
+            webmin usermin virtualmin-base \
+            apache2 apache2-utils \
+            mariadb-server mariadb-client \
+            php php-cli php-fpm php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            certbot python3-certbot-apache
+          
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/
+          
+          cat > /offline-bundle/scripts/install.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages"
+          
+          echo "Installing Virtualmin Mini (Web Only)..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable apache2 mariadb
+          
+          echo "Virtualmin Mini installed!"
+          echo "Webmin: https://$(hostname -I | awk '{print $1}'):10000"
+          EOF
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # COCKPIT + WEB BUNDLE
+      # ============================================
+      - name: Download Cockpit + Web Stack
+        if: github.event.inputs.bundle_type == 'cockpit-web'
+        run: |
+          apt-get update
+          
+          # Download Cockpit and web modules
+          apt-get install --download-only -y \
+            cockpit cockpit-machines \
+            cockpit-podman cockpit-storaged \
+            cockpit-networkmanager \
+            apache2 nginx \
+            mariadb-server \
+            php php-cli php-fpm php-mysql
+          
+          cp /var/cache/apt/archives/*.deb /offline-bundle/packages/
+          
+          cat > /offline-bundle/scripts/install.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages"
+          
+          echo "Installing Cockpit + Web Stack..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          
+          systemctl enable cockpit.socket apache2 mariadb
+          
+          echo "Cockpit installed! Access: https://$(hostname -I | awk '{print $1}'):9090"
+          EOF
+          chmod +x /offline-bundle/scripts/install.sh
+
+      # ============================================
+      # CREATE LOCAL APT REPOSITORY
+      # ============================================
+      - name: Create Local APT Repository
+        run: |
+          cd /offline-bundle/repos
+          mkdir -p pool/main
+          cp /offline-bundle/packages/*.deb pool/main/
+          
+          # Create Packages index
+          mkdir -p dists/stable/main/binary-amd64
+          dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-amd64/Packages
+          gzip -k dists/stable/main/binary-amd64/Packages
+          
+          # Create Release file
+          cat > dists/stable/Release << EOF
+          Origin: Offline Bundle
+          Label: Offline Virtualmin/Webmin
+          Suite: stable
+          Codename: stable
+          Architectures: amd64
+          Components: main
+          Description: Offline package repository for air-gapped servers
+          Date: $(date -Ru)
+          EOF
+          
+          # Add hashes to Release
+          {
+            echo "MD5Sum:"
+            find dists/stable -type f -exec md5sum {} \; | awk '{print " " $1 " " $2}'
+            echo "SHA256:"
+            find dists/stable -type f -exec sha256sum {} \; | awk '{print " " $1 " " $2}'
+          } >> dists/stable/Release
+          
+          # Create sources.list template
+          cat > /offline-bundle/scripts/add-repo.sh << 'EOF'
+          #!/bin/bash
+          # Run this on the offline server to add the local repository
+          echo "deb [trusted=yes] file:/path/to/offline-bundle/repos stable main" > /etc/apt/sources.list.d/offline.list
+          apt-get update
+          EOF
+          chmod +x /offline-bundle/scripts/add-repo.sh
+
+      # ============================================
+      # CREATE README
+      # ============================================
+      - name: Create README
+        run: |
+          cat > /offline-bundle/README.md << EOF
+          # Offline Package Bundle
+          
+          ## Type: ${{ github.event.inputs.bundle_type }}
+          ## Ubuntu: ${{ github.event.inputs.ubuntu_version }}
+          
+          ### Installation on Air-Gapped Server:
+          
+          1. Transfer this entire folder to your offline server (USB/SCP/FTP)
+          2. Run the install script:
+             \\`\\`\\`bash
+             cd /path/to/offline-bundle/scripts
+             sudo ./install.sh
+             \\`\\`\\`
+          
+          3. Or use the local APT repository:
+             \\`\\`\\`bash
+             sudo ./scripts/add-repo.sh
+             sudo apt-get install webmin  # or virtualmin-base
+             \\`\\`\\`
+          
+          ### Contents:
+          - packages/ - All .deb files
+          - repos/ - Local APT repository
+          - scripts/ - Installation scripts
+          
+          ### Generated: $(date)
+          EOF
+
+      # ============================================
+      # PACKAGE AND UPLOAD
+      # ============================================
+      - name: Create Archive
+        run: |
+          cd /
+          tar -czf offline-${{ github.event.inputs.bundle_type }}-${{ github.event.inputs.ubuntu_version }}.tar.gz offline-bundle
+          ls -lh offline-*.tar.gz
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-bundle-${{ github.event.inputs.bundle_type }}-${{ github.event.inputs.ubuntu_version }}
+          path: /offline-*.tar.gz
+          retention-days: 30
+
+      - name: Upload to Release (if tagged)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: /offline-*.tar.gz
+'''
+
+with open('/mnt/agents/output/offline-bundle-workflow.yml', 'w') as f:
+    f.write(workflow_content)
+
+print("✅ Workflow file created successfully!")
+print(f"📄 File size: {len(workflow_content)} characters")
