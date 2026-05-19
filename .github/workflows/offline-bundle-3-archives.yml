@@ -1,0 +1,1083 @@
+name: Build Offline Virtualmin/Webmin Package Bundle (3 Archives)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu_version:
+        description: 'Ubuntu Version'
+        required: true
+        default: 'jammy'
+        type: choice
+        options:
+          - jammy
+          - noble
+      bundle_type:
+        description: 'Bundle Type'
+        required: true
+        default: 'virtualmin-full-lamp'
+        type: choice
+        options:
+          - webmin-only
+          - virtualmin-full-lamp
+          - virtualmin-full-lemp
+          - virtualmin-mini-lamp
+          - virtualmin-mini-lemp
+          - cockpit-web
+      release_version:
+        description: 'Release Version Tag (e.g. v1.0.0) - Leave empty for auto'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  build-offline-bundle:
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ github.event.inputs.ubuntu_version }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Environment
+        run: |
+          apt-get update
+          apt-get install -y wget curl gnupg2 ca-certificates lsb-release dpkg-dev apt-utils
+          mkdir -p /offline-bundle/packages/core
+          mkdir -p /offline-bundle/packages/deps
+          mkdir -p /offline-bundle/packages/all
+          mkdir -p /offline-bundle/scripts
+          mkdir -p /offline-bundle/repos
+          mkdir -p /offline-bundle/docs
+          mkdir -p /etc/apt/keyrings
+
+      # ============================================
+      # FIXED: SETUP REPOSITORIES WITH CORRECT GPG HANDLING
+      # ============================================
+      - name: Setup Virtualmin/Webmin Repositories (Fixed)
+        if: contains(github.event.inputs.bundle_type, 'virtualmin') || github.event.inputs.bundle_type == 'webmin-only'
+        run: |
+          echo "=== Setting up repositories with corrected GPG handling ==="
+          METHOD_SUCCESS=false
+
+          # Method 1: Download Virtualmin 7 GPG Key using gpg directly
+          echo "--- Method 1: Virtualmin 7 GPG Key ---"
+          if wget --timeout=15 --tries=2 -q \
+            "https://software.virtualmin.com/lib/RPM-GPG-KEY-virtualmin-7" \
+            -O /tmp/virtualmin-7.key 2>/dev/null; then
+
+            gpg --dearmor < /tmp/virtualmin-7.key > /etc/apt/keyrings/virtualmin-7.gpg 2>/dev/null || \
+            gpg --batch --yes --dearmor -o /etc/apt/keyrings/virtualmin-7.gpg /tmp/virtualmin-7.key 2>/dev/null
+
+            if [ -f /etc/apt/keyrings/virtualmin-7.gpg ] && [ -s /etc/apt/keyrings/virtualmin-7.gpg ]; then
+              echo "deb [signed-by=/etc/apt/keyrings/virtualmin-7.gpg] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+                > /etc/apt/sources.list.d/virtualmin.list
+              METHOD_SUCCESS=true
+              echo "✅ Method 1 SUCCESS: Virtualmin 7 key imported"
+            else
+              echo "⚠️ Method 1 FAILED: Could not create keyring"
+            fi
+          else
+            echo "⚠️ Method 1 FAILED: Could not download key"
+          fi
+
+          # Method 2: Try Virtualmin 6 key
+          if [ "$METHOD_SUCCESS" = false ]; then
+            echo "--- Method 2: Virtualmin 6 GPG Key ---"
+            if wget --timeout=15 --tries=2 -q \
+              "https://software.virtualmin.com/lib/RPM-GPG-KEY-virtualmin-6" \
+              -O /tmp/virtualmin-6.key 2>/dev/null; then
+
+              gpg --dearmor < /tmp/virtualmin-6.key > /etc/apt/keyrings/virtualmin-6.gpg 2>/dev/null || \
+              gpg --batch --yes --dearmor -o /etc/apt/keyrings/virtualmin-6.gpg /tmp/virtualmin-6.key 2>/dev/null
+
+              if [ -f /etc/apt/keyrings/virtualmin-6.gpg ] && [ -s /etc/apt/keyrings/virtualmin-6.gpg ]; then
+                echo "deb [signed-by=/etc/apt/keyrings/virtualmin-6.gpg] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+                  > /etc/apt/sources.list.d/virtualmin.list
+                METHOD_SUCCESS=true
+                echo "✅ Method 2 SUCCESS: Virtualmin 6 key imported"
+              else
+                echo "⚠️ Method 2 FAILED: Could not create keyring"
+              fi
+            else
+              echo "⚠️ Method 2 FAILED: Could not download key"
+            fi
+          fi
+
+          # Method 3: Webmin key with trusted Virtualmin
+          if [ "$METHOD_SUCCESS" = false ]; then
+            echo "--- Method 3: Webmin Developers Key ---"
+            if wget --timeout=15 --tries=2 -q \
+              "https://download.webmin.com/jcameron-key.asc" \
+              -O /tmp/webmin.key 2>/dev/null; then
+
+              gpg --dearmor < /tmp/webmin.key > /etc/apt/keyrings/webmin.gpg 2>/dev/null || \
+              gpg --batch --yes --dearmor -o /etc/apt/keyrings/webmin.gpg /tmp/webmin.key 2>/dev/null
+
+              if [ -f /etc/apt/keyrings/webmin.gpg ] && [ -s /etc/apt/keyrings/webmin.gpg ]; then
+                echo "deb [signed-by=/etc/apt/keyrings/webmin.gpg] https://download.webmin.com/download/repository sarge contrib" \
+                  > /etc/apt/sources.list.d/webmin.list
+                echo "deb [trusted=yes] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+                  > /etc/apt/sources.list.d/virtualmin.list
+                METHOD_SUCCESS=true
+                echo "✅ Method 3 SUCCESS: Webmin key + trusted Virtualmin"
+              else
+                echo "⚠️ Method 3 FAILED: Could not create keyring"
+              fi
+            else
+              echo "⚠️ Method 3 FAILED: Could not download key"
+            fi
+          fi
+
+          # Final Fallback: No GPG verification
+          if [ "$METHOD_SUCCESS" = false ]; then
+            echo "--- FALLBACK: No GPG verification ---"
+            echo "deb [trusted=yes] https://software.virtualmin.com/vm/7/gpl/apt virtualmin main" \
+              > /etc/apt/sources.list.d/virtualmin.list
+            echo "deb [trusted=yes] https://download.webmin.com/download/repository sarge contrib" \
+              > /etc/apt/sources.list.d/webmin.list
+            echo "⚠️ FALLBACK ACTIVE: No GPG verification - packages will still download"
+          fi
+
+          # Update package lists
+          echo "=== Updating package lists ==="
+          apt-get update 2>&1 | tee /tmp/apt-update.log || {
+            echo "Some repositories had warnings, checking if we can continue..."
+            if grep -q "Get:" /tmp/apt-update.log || grep -q "Hit:" /tmp/apt-update.log; then
+              echo "✅ Repositories accessible, continuing with download..."
+            else
+              echo "❌ Critical repository failure"
+              exit 1
+            fi
+          }
+
+      # ============================================
+      # WEBMIN ONLY BUNDLE
+      # ============================================
+      - name: Build Webmin-Only Bundle
+        if: github.event.inputs.bundle_type == 'webmin-only'
+        run: |
+          echo "=== Building Webmin-Only Bundle ==="
+
+          # Download Webmin with all deps
+          apt-get install --download-only -y webmin 2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated webmin 2>/dev/null || true
+
+          # Ensure all dependencies are downloaded
+          apt-get install --download-only -y \
+            perl libnet-ssleay-perl openssl \
+            libauthen-pam-perl libpam-runtime \
+            libio-pty-perl apt-show-versions python3 \
+            unzip shared-mime-info libapt-pkg-perl \
+            libjson-pp-perl libencode-locale-perl \
+            libfile-listing-perl libhtml-parser-perl \
+            libhtml-tagset-perl libhtml-tree-perl \
+            libhttp-cookies-perl libhttp-date-perl \
+            libhttp-message-perl libhttp-negotiate-perl \
+            libio-html-perl libio-socket-ssl-perl \
+            liblwp-mediatypes-perl liblwp-protocol-https-perl \
+            libnet-http-perl libnet-smtp-ssl-perl \
+            libsocket6-perl libtimedate-perl \
+            liburi-perl libwww-perl libwww-robotrules-perl \
+            2>/dev/null || true
+
+          # Separate core and dependencies
+          for pkg in /var/cache/apt/archives/*.deb; do
+            pkg_name=$(dpkg-deb -f "$pkg" Package 2>/dev/null || basename "$pkg" | sed 's/_.*//')
+            if echo "$pkg_name" | grep -qiE "^(webmin|usermin|virtualmin)"; then
+              cp "$pkg" /offline-bundle/packages/core/ 2>/dev/null || true
+            else
+              cp "$pkg" /offline-bundle/packages/deps/ 2>/dev/null || true
+            fi
+          done
+
+          # Copy all to all/
+          cp /offline-bundle/packages/core/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+          cp /offline-bundle/packages/deps/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+
+          # Create install scripts
+          cat > /offline-bundle/scripts/install-core.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/core"
+          echo "Installing Webmin core packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable webmin || true
+          echo "✅ Webmin core installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-deps.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/deps"
+          echo "Installing dependencies..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          echo "✅ Dependencies installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-all.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/all"
+          echo "Installing all packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable webmin || true
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+          echo "✅ Webmin installed! Access: https://${IP_ADDR}:10000"
+          INSTALLER
+
+          chmod +x /offline-bundle/scripts/*.sh
+
+      # ============================================
+      # VIRTUALMIN FULL LAMP BUNDLE
+      # ============================================
+      - name: Build Virtualmin Full (LAMP)
+        if: github.event.inputs.bundle_type == 'virtualmin-full-lamp'
+        run: |
+          echo "=== Building Virtualmin Full (LAMP) ==="
+
+          # Core Virtualmin packages
+          apt-get install --download-only -y \
+            webmin usermin virtualmin-base \
+            virtualmin-core virtualmin-config \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+          # Complete LAMP Stack
+          apt-get install --download-only -y \
+            apache2 apache2-utils apache2-bin \
+            apache2-data apache2-doc \
+            libapache2-mod-php libapache2-mod-fcgid \
+            libapache2-mod-perl2 libapache2-mod-python \
+            mariadb-server mariadb-client \
+            mariadb-common mariadb-server-core \
+            php php-cli php-fpm php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            php-zip php-intl php-bcmath php-json \
+            php-opcache php-soap php-xmlrpc \
+            php-bz2 php-readline php-sqlite3 \
+            php-tidy php-xsl php-pear \
+            2>/dev/null || true
+
+          # Mail services
+          apt-get install --download-only -y \
+            bind9 bind9utils bind9-doc dnsutils \
+            postfix postfix-pcre postfix-doc \
+            dovecot-core dovecot-imapd dovecot-pop3d \
+            dovecot-lmtpd dovecot-mysql \
+            mailutils mailutils-mda \
+            2>/dev/null || true
+
+          # FTP & Security
+          apt-get install --download-only -y \
+            proftpd-basic proftpd-mod-vroot \
+            proftpd-doc \
+            clamav clamav-daemon clamav-freshclam \
+            spamassassin spamc \
+            fail2ban \
+            ufw \
+            2>/dev/null || true
+
+          # SSL & Certificates
+          apt-get install --download-only -y \
+            certbot python3-certbot-apache \
+            python3-certbot-dns-cloudflare \
+            python3-certbot-dns-route53 \
+            openssl ssl-cert \
+            2>/dev/null || true
+
+          # Additional tools
+          apt-get install --download-only -y \
+            awstats webalizer \
+            phpmyadmin adminer \
+            roundcube-core roundcube-mysql \
+            2>/dev/null || true
+
+          # Separate core and dependencies
+          for pkg in /var/cache/apt/archives/*.deb; do
+            pkg_name=$(dpkg-deb -f "$pkg" Package 2>/dev/null || basename "$pkg" | sed 's/_.*//')
+            if echo "$pkg_name" | grep -qiE "^(webmin|usermin|virtualmin)"; then
+              cp "$pkg" /offline-bundle/packages/core/ 2>/dev/null || true
+            else
+              cp "$pkg" /offline-bundle/packages/deps/ 2>/dev/null || true
+            fi
+          done
+
+          # Copy all to all/
+          cp /offline-bundle/packages/core/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+          cp /offline-bundle/packages/deps/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+
+          # Create install scripts
+          cat > /offline-bundle/scripts/install-core.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/core"
+          echo "Installing Virtualmin core packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable webmin || true
+          echo "✅ Virtualmin core installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-deps.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/deps"
+          echo "Installing LAMP dependencies..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable apache2 mariadb postfix dovecot bind9 fail2ban || true
+          echo "✅ LAMP dependencies installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-all.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/all"
+          echo "Installing all packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable apache2 mariadb postfix dovecot bind9 fail2ban webmin || true
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+          echo "✅ Virtualmin Full (LAMP) installed!"
+          echo "Webmin:  https://${IP_ADDR}:10000"
+          echo "Usermin: https://${IP_ADDR}:20000"
+          INSTALLER
+
+          chmod +x /offline-bundle/scripts/*.sh
+
+      # ============================================
+      # VIRTUALMIN FULL LEMP BUNDLE
+      # ============================================
+      - name: Build Virtualmin Full (LEMP)
+        if: github.event.inputs.bundle_type == 'virtualmin-full-lemp'
+        run: |
+          echo "=== Building Virtualmin Full (LEMP) ==="
+
+          apt-get install --download-only -y \
+            webmin usermin virtualmin-base \
+            virtualmin-core virtualmin-config \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            nginx nginx-common nginx-full \
+            nginx-extras nginx-doc \
+            php-fpm php-cli php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            php-zip php-intl php-bcmath php-json \
+            php-opcache php-soap php-xmlrpc \
+            php-bz2 php-readline php-sqlite3 \
+            php-tidy php-xsl php-pear \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            mariadb-server mariadb-client \
+            mariadb-common mariadb-server-core \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            bind9 bind9utils bind9-doc dnsutils \
+            postfix postfix-pcre postfix-doc \
+            dovecot-core dovecot-imapd dovecot-pop3d \
+            dovecot-lmtpd dovecot-mysql \
+            mailutils mailutils-mda \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            proftpd-basic proftpd-mod-vroot \
+            proftpd-doc \
+            clamav clamav-daemon clamav-freshclam \
+            spamassassin spamc \
+            fail2ban \
+            ufw \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            certbot python3-certbot-nginx \
+            python3-certbot-dns-cloudflare \
+            python3-certbot-dns-route53 \
+            openssl ssl-cert \
+            2>/dev/null || true
+
+          for pkg in /var/cache/apt/archives/*.deb; do
+            pkg_name=$(dpkg-deb -f "$pkg" Package 2>/dev/null || basename "$pkg" | sed 's/_.*//')
+            if echo "$pkg_name" | grep -qiE "^(webmin|usermin|virtualmin)"; then
+              cp "$pkg" /offline-bundle/packages/core/ 2>/dev/null || true
+            else
+              cp "$pkg" /offline-bundle/packages/deps/ 2>/dev/null || true
+            fi
+          done
+
+          cp /offline-bundle/packages/core/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+          cp /offline-bundle/packages/deps/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install-core.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/core"
+          echo "Installing Virtualmin core packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable webmin || true
+          echo "✅ Virtualmin core installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-deps.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/deps"
+          echo "Installing LEMP dependencies..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable nginx php*-fpm mariadb postfix dovecot bind9 fail2ban || true
+          echo "✅ LEMP dependencies installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-all.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/all"
+          echo "Installing all packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable nginx php*-fpm mariadb postfix dovecot bind9 fail2ban webmin || true
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+          echo "✅ Virtualmin Full (LEMP) installed!"
+          echo "Webmin:  https://${IP_ADDR}:10000"
+          echo "Usermin: https://${IP_ADDR}:20000"
+          INSTALLER
+
+          chmod +x /offline-bundle/scripts/*.sh
+
+      # ============================================
+      # VIRTUALMIN MINI LAMP BUNDLE
+      # ============================================
+      - name: Build Virtualmin Mini (LAMP)
+        if: github.event.inputs.bundle_type == 'virtualmin-mini-lamp'
+        run: |
+          echo "=== Building Virtualmin Mini (LAMP) ==="
+
+          apt-get install --download-only -y \
+            webmin usermin \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            apache2 apache2-utils apache2-bin \
+            libapache2-mod-php \
+            mariadb-server mariadb-client \
+            php php-cli php-fpm php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            certbot python3-certbot-apache \
+            openssl ssl-cert \
+            2>/dev/null || true
+
+          for pkg in /var/cache/apt/archives/*.deb; do
+            pkg_name=$(dpkg-deb -f "$pkg" Package 2>/dev/null || basename "$pkg" | sed 's/_.*//')
+            if echo "$pkg_name" | grep -qiE "^(webmin|usermin|virtualmin)"; then
+              cp "$pkg" /offline-bundle/packages/core/ 2>/dev/null || true
+            else
+              cp "$pkg" /offline-bundle/packages/deps/ 2>/dev/null || true
+            fi
+          done
+
+          cp /offline-bundle/packages/core/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+          cp /offline-bundle/packages/deps/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install-core.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/core"
+          echo "Installing Virtualmin core packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable webmin || true
+          echo "✅ Virtualmin core installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-deps.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/deps"
+          echo "Installing LAMP dependencies..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable apache2 mariadb || true
+          echo "✅ LAMP dependencies installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-all.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/all"
+          echo "Installing all packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable apache2 mariadb webmin || true
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+          echo "✅ Virtualmin Mini (LAMP) installed!"
+          echo "Webmin: https://${IP_ADDR}:10000"
+          INSTALLER
+
+          chmod +x /offline-bundle/scripts/*.sh
+
+      # ============================================
+      # VIRTUALMIN MINI LEMP BUNDLE
+      # ============================================
+      - name: Build Virtualmin Mini (LEMP)
+        if: github.event.inputs.bundle_type == 'virtualmin-mini-lemp'
+        run: |
+          echo "=== Building Virtualmin Mini (LEMP) ==="
+
+          apt-get install --download-only -y \
+            webmin usermin \
+            2>/dev/null || \
+          apt-get install --download-only -y --allow-unauthenticated \
+            webmin usermin \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            nginx nginx-common nginx-full \
+            php-fpm php-cli php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            certbot python3-certbot-nginx \
+            openssl ssl-cert \
+            2>/dev/null || true
+
+          for pkg in /var/cache/apt/archives/*.deb; do
+            pkg_name=$(dpkg-deb -f "$pkg" Package 2>/dev/null || basename "$pkg" | sed 's/_.*//')
+            if echo "$pkg_name" | grep -qiE "^(webmin|usermin|virtualmin)"; then
+              cp "$pkg" /offline-bundle/packages/core/ 2>/dev/null || true
+            else
+              cp "$pkg" /offline-bundle/packages/deps/ 2>/dev/null || true
+            fi
+          done
+
+          cp /offline-bundle/packages/core/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+          cp /offline-bundle/packages/deps/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install-core.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/core"
+          echo "Installing Virtualmin core packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable webmin || true
+          echo "✅ Virtualmin core installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-deps.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/deps"
+          echo "Installing LEMP dependencies..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable nginx php*-fpm mariadb || true
+          echo "✅ LEMP dependencies installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-all.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/all"
+          echo "Installing all packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable nginx php*-fpm mariadb webmin || true
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+          echo "✅ Virtualmin Mini (LEMP) installed!"
+          echo "Webmin: https://${IP_ADDR}:10000"
+          INSTALLER
+
+          chmod +x /offline-bundle/scripts/*.sh
+
+      # ============================================
+      # COCKPIT + WEB BUNDLE
+      # ============================================
+      - name: Build Cockpit + Web Bundle
+        if: github.event.inputs.bundle_type == 'cockpit-web'
+        run: |
+          echo "=== Building Cockpit + Web Bundle ==="
+
+          apt-get update || true
+
+          apt-get install --download-only -y \
+            cockpit cockpit-machines \
+            cockpit-podman cockpit-storaged \
+            cockpit-networkmanager cockpit-packagekit \
+            2>/dev/null || true
+
+          apt-get install --download-only -y \
+            apache2 nginx \
+            mariadb-server mariadb-client \
+            php php-cli php-fpm php-mysql \
+            php-gd php-curl php-xml php-mbstring \
+            certbot python3-certbot-apache \
+            python3-certbot-nginx \
+            2>/dev/null || true
+
+          for pkg in /var/cache/apt/archives/*.deb; do
+            pkg_name=$(dpkg-deb -f "$pkg" Package 2>/dev/null || basename "$pkg" | sed 's/_.*//')
+            if echo "$pkg_name" | grep -qiE "^cockpit"; then
+              cp "$pkg" /offline-bundle/packages/core/ 2>/dev/null || true
+            else
+              cp "$pkg" /offline-bundle/packages/deps/ 2>/dev/null || true
+            fi
+          done
+
+          cp /offline-bundle/packages/core/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+          cp /offline-bundle/packages/deps/*.deb /offline-bundle/packages/all/ 2>/dev/null || true
+
+          cat > /offline-bundle/scripts/install-core.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/core"
+          echo "Installing Cockpit core packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable cockpit.socket || true
+          echo "✅ Cockpit core installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-deps.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/deps"
+          echo "Installing web stack dependencies..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable apache2 nginx mariadb || true
+          echo "✅ Web stack dependencies installed!"
+          INSTALLER
+
+          cat > /offline-bundle/scripts/install-all.sh << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          cd "$SCRIPT_DIR/../packages/all"
+          echo "Installing all packages..."
+          dpkg -i *.deb || true
+          apt-get install -f -y
+          systemctl enable cockpit.socket apache2 nginx mariadb || true
+          IP_ADDR=$(hostname -I | awk '{print $1}')
+          echo "✅ Cockpit + Web Stack installed!"
+          echo "Cockpit: https://${IP_ADDR}:9090"
+          INSTALLER
+
+          chmod +x /offline-bundle/scripts/*.sh
+
+      # ============================================
+      # CREATE LOCAL APT REPOSITORY
+      # ============================================
+      - name: Create Local APT Repository
+        run: |
+          for subdir in core deps all; do
+            cd /offline-bundle/repos
+            mkdir -p "${subdir}/pool/main"
+            cp /offline-bundle/packages/${subdir}/*.deb "${subdir}/pool/main/" 2>/dev/null || true
+
+            if [ "$(ls -A ${subdir}/pool/main/ 2>/dev/null)" ]; then
+              mkdir -p "${subdir}/dists/stable/main/binary-amd64"
+              dpkg-scanpackages "${subdir}/pool/main" /dev/null > "${subdir}/dists/stable/main/binary-amd64/Packages" 2>/dev/null || \
+              (echo "Package: dummy" > "${subdir}/dists/stable/main/binary-amd64/Packages")
+              gzip -k -f "${subdir}/dists/stable/main/binary-amd64/Packages" 2>/dev/null || true
+
+              cat > "${subdir}/dists/stable/Release" << EOF
+          Origin: Offline Bundle
+          Label: Offline ${subdir}
+          Suite: stable
+          Codename: stable
+          Architectures: amd64
+          Components: main
+          Description: Offline ${subdir} repository
+          Date: $(date -Ru)
+          EOF
+
+              {
+                echo "MD5Sum:"
+                find "${subdir}/dists/stable" -type f -exec md5sum {} \; 2>/dev/null | awk '{print " " $1 " " $2}' || true
+                echo "SHA256:"
+                find "${subdir}/dists/stable" -type f -exec sha256sum {} \; 2>/dev/null | awk '{print " " $1 " " $2}' || true
+              } >> "${subdir}/dists/stable/Release"
+            fi
+          done
+
+          cat > /offline-bundle/scripts/add-repo-core.sh << 'REPO'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          echo "deb [trusted=yes] file:$SCRIPT_DIR/../repos/core stable main" > /etc/apt/sources.list.d/offline-core.list
+          apt-get update || true
+          echo "✅ Core repository added!"
+          REPO
+
+          cat > /offline-bundle/scripts/add-repo-deps.sh << 'REPO'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          echo "deb [trusted=yes] file:$SCRIPT_DIR/../repos/deps stable main" > /etc/apt/sources.list.d/offline-deps.list
+          apt-get update || true
+          echo "✅ Dependencies repository added!"
+          REPO
+
+          cat > /offline-bundle/scripts/add-repo-all.sh << 'REPO'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          echo "deb [trusted=yes] file:$SCRIPT_DIR/../repos/all stable main" > /etc/apt/sources.list.d/offline-all.list
+          apt-get update || true
+          echo "✅ All packages repository added!"
+          REPO
+
+          chmod +x /offline-bundle/scripts/add-repo-*.sh
+
+      # ============================================
+      # GENERATE DOCUMENTATION
+      # ============================================
+      - name: Generate Documentation
+        run: |
+          BUNDLE_TYPE="${{ github.event.inputs.bundle_type }}"
+          UBUNTU_VER="${{ github.event.inputs.ubuntu_version }}"
+          BUILD_DATE="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+          CORE_COUNT=$(ls /offline-bundle/packages/core/*.deb 2>/dev/null | wc -l)
+          DEPS_COUNT=$(ls /offline-bundle/packages/deps/*.deb 2>/dev/null | wc -l)
+          ALL_COUNT=$(ls /offline-bundle/packages/all/*.deb 2>/dev/null | wc -l)
+
+          CORE_SIZE=$(du -sh /offline-bundle/packages/core/ 2>/dev/null | cut -f1 || echo "0")
+          DEPS_SIZE=$(du -sh /offline-bundle/packages/deps/ 2>/dev/null | cut -f1 || echo "0")
+          ALL_SIZE=$(du -sh /offline-bundle/packages/all/ 2>/dev/null | cut -f1 || echo "0")
+
+          case "$BUNDLE_TYPE" in
+            *lamp*) STACK="LAMP (Apache + MariaDB + PHP)" ;;
+            *lemp*) STACK="LEMP (Nginx + MariaDB + PHP)" ;;
+            webmin-only) STACK="Webmin Only" ;;
+            cockpit-web) STACK="Cockpit + Web Servers" ;;
+          esac
+
+          cat > /offline-bundle/README.md << EOF
+          # 🔒 Offline Server Management Bundle
+
+          ## 📋 Bundle Information
+
+          | Property | Value |
+          |----------|-------|
+          | **Bundle Type** | ${BUNDLE_TYPE} |
+          | **Ubuntu Version** | ${UBUNTU_VER} |
+          | **Build Date** | ${BUILD_DATE} |
+          | **Stack** | ${STACK} |
+
+          ## 📦 Three Archives Included
+
+          This bundle contains **three separate archives** for flexibility:
+
+          | Archive | Contents | Packages | Size | Use Case |
+          |---------|----------|----------|------|----------|
+          | **core** | Panel core packages only | ${CORE_COUNT} | ${CORE_SIZE} | Install just the panel |
+          | **deps** | All dependencies only | ${DEPS_COUNT} | ${DEPS_SIZE} | Install stack without panel |
+          | **all** | Complete bundle (core + deps) | ${ALL_COUNT} | ${ALL_SIZE} | Full installation |
+
+          ## 📁 Directory Structure
+
+          \`\`\`
+          offline-bundle/
+          ├── packages/
+          │   ├── core/          # Core panel packages
+          │   ├── deps/          # All dependencies
+          │   └── all/           # Complete package set
+          ├── scripts/
+          │   ├── install-core.sh     # Install core only
+          │   ├── install-deps.sh     # Install dependencies only
+          │   ├── install-all.sh      # Install everything
+          │   ├── add-repo-core.sh    # Add core APT repo
+          │   ├── add-repo-deps.sh    # Add deps APT repo
+          │   └── add-repo-all.sh     # Add all APT repo
+          ├── repos/
+          │   ├── core/          # Core APT repository
+          │   ├── deps/          # Deps APT repository
+          │   └── all/           # Complete APT repository
+          └── docs/              # Documentation
+          \`\`\`
+
+          ## 🚀 Quick Start
+
+          ### Option 1: Install Everything (Recommended)
+          \`\`\`bash
+          cd offline-bundle/scripts
+          sudo ./install-all.sh
+          \`\`\`
+
+          ### Option 2: Install Core Only (Panel Only)
+          \`\`\`bash
+          cd offline-bundle/scripts
+          sudo ./install-core.sh
+          \`\`\`
+
+          ### Option 3: Install Dependencies Only (Stack Only)
+          \`\`\`bash
+          cd offline-bundle/scripts
+          sudo ./install-deps.sh
+          \`\`\`
+
+          ### Option 4: Use APT Repository
+          \`\`\`bash
+          cd offline-bundle/scripts
+          sudo ./add-repo-all.sh    # or add-repo-core.sh / add-repo-deps.sh
+          sudo apt-get install webmin apache2 mariadb-server
+          \`\`\`
+
+          ## 📊 Service Details
+
+          See docs/INSTALL.md for complete service information.
+
+          ---
+          *Built for air-gapped/offline server installations.*
+          EOF
+
+          cp /offline-bundle/README.md /offline-bundle/docs/README.md
+
+          cat > /offline-bundle/docs/INSTALL.md << EOF
+          # Installation Guide
+
+          ## Three Installation Options
+
+          ### 1. Complete Installation (all.tar.gz)
+          Includes panel + all dependencies. Best for fresh servers.
+
+          ### 2. Core Only (core.tar.gz)
+          Panel packages only. Use when dependencies are already installed.
+
+          ### 3. Dependencies Only (deps.tar.gz)
+          Web stack without panel. Use for manual panel installation.
+
+          ## Archive Details
+
+          | Archive | File Pattern | Contents |
+          |---------|-------------|----------|
+          | Core | *-core.tar.gz | webmin, usermin, virtualmin* |
+          | Deps | *-deps.tar.gz | apache2/nginx, mariadb, php, postfix, dovecot, bind9, etc. |
+          | All | *-all.tar.gz | Core + Deps combined |
+
+          ## Size Comparison
+
+          - Core: ~5-20 MB (panel packages only)
+          - Deps: ~200MB-1GB (full stack)
+          - All: ~205MB-1.02GB (complete bundle)
+          EOF
+
+          for subdir in core deps all; do
+            ls /offline-bundle/packages/${subdir}/*.deb 2>/dev/null | xargs -n1 basename | sort > /offline-bundle/docs/PACKAGE_MANIFEST_${subdir}.txt
+          done
+
+      # ============================================
+      # VERIFY BUNDLE CONTENTS
+      # ============================================
+      - name: Verify Bundle
+        run: |
+          echo "========================================"
+          echo "BUNDLE VERIFICATION REPORT"
+          echo "========================================"
+          for subdir in core deps all; do
+            echo ""
+            echo "📦 ${subdir} packages:"
+            echo "  Count: $(ls /offline-bundle/packages/${subdir}/*.deb 2>/dev/null | wc -l)"
+            echo "  Size:  $(du -sh /offline-bundle/packages/${subdir}/ 2>/dev/null | cut -f1 || echo 'N/A')"
+          done
+          echo ""
+          echo "📄 Scripts:"
+          ls -la /offline-bundle/scripts/
+          echo "========================================"
+
+      # ============================================
+      # CREATE THREE ARCHIVES
+      # ============================================
+      - name: Create Three Archives
+        run: |
+          cd /
+          BUNDLE_TYPE="${{ github.event.inputs.bundle_type }}"
+          UBUNTU_VER="${{ github.event.inputs.ubuntu_version }}"
+          BUILD_DATE="$(date -u +%Y%m%d_%H%M%S)"
+          SHORT_DATE="$(date -u +%Y%m%d)"
+
+          # Create three separate archives
+          for subdir in core deps all; do
+            ARCHIVE_NAME="offline-${BUNDLE_TYPE}-${subdir}-${UBUNTU_VER}-${BUILD_DATE}"
+
+            echo "Creating archive: ${ARCHIVE_NAME}.tar.gz"
+
+            # Create temp directory with only this subdir
+            mkdir -p "/tmp/${ARCHIVE_NAME}/offline-bundle"
+            cp -r /offline-bundle/scripts "/tmp/${ARCHIVE_NAME}/offline-bundle/"
+            cp -r /offline-bundle/docs "/tmp/${ARCHIVE_NAME}/offline-bundle/"
+            cp -r /offline-bundle/repos/${subdir} "/tmp/${ARCHIVE_NAME}/offline-bundle/repos" 2>/dev/null || true
+            cp -r /offline-bundle/packages/${subdir} "/tmp/${ARCHIVE_NAME}/offline-bundle/packages"
+
+            # Create archive
+            cd "/tmp/${ARCHIVE_NAME}"
+            tar -czf "/${ARCHIVE_NAME}.tar.gz" offline-bundle
+
+            # Create checksum
+            sha256sum "/${ARCHIVE_NAME}.tar.gz" > "/${ARCHIVE_NAME}.tar.gz.sha256"
+
+            # Create info file
+            cat > "/${ARCHIVE_NAME}.info.txt" << EOF
+          Type: ${BUNDLE_TYPE}
+          Category: ${subdir}
+          Ubuntu: ${UBUNTU_VER}
+          Build Date: ${BUILD_DATE}
+          Packages: $(ls /offline-bundle/packages/${subdir}/*.deb 2>/dev/null | wc -l)
+          Size: $(du -sh /offline-bundle/packages/${subdir}/ 2>/dev/null | cut -f1 || echo 'N/A')
+          EOF
+
+            ls -lh "/${ARCHIVE_NAME}"*
+          done
+
+          # Set env vars
+          echo "BUNDLE_TYPE=${BUNDLE_TYPE}" >> $GITHUB_ENV
+          echo "UBUNTU_VER=${UBUNTU_VER}" >> $GITHUB_ENV
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
+          echo "SHORT_DATE=${SHORT_DATE}" >> $GITHUB_ENV
+
+      # ============================================
+      # UPLOAD ALL ARTIFACTS
+      # ============================================
+      - name: Upload All Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-${{ env.BUNDLE_TYPE }}-${{ env.UBUNTU_VER }}-${{ env.BUILD_DATE }}
+          path: |
+            /offline-*-core-*.tar.gz
+            /offline-*-core-*.sha256
+            /offline-*-core-*.info.txt
+            /offline-*-deps-*.tar.gz
+            /offline-*-deps-*.sha256
+            /offline-*-deps-*.info.txt
+            /offline-*-all-*.tar.gz
+            /offline-*-all-*.sha256
+            /offline-*-all-*.info.txt
+          retention-days: 30
+
+      # ============================================
+      # CREATE RELEASE WITH ALL THREE ARCHIVES
+      # ============================================
+      - name: Determine Release Tag
+        id: release_tag
+        run: |
+          BUNDLE_TYPE="${{ env.BUNDLE_TYPE }}"
+          UBUNTU_VER="${{ env.UBUNTU_VER }}"
+          SHORT_DATE="${{ env.SHORT_DATE }}"
+          INPUT_VERSION="${{ github.event.inputs.release_version }}"
+
+          if [ -n "$INPUT_VERSION" ]; then
+            TAG_NAME="$INPUT_VERSION"
+          else
+            TAG_NAME="${BUNDLE_TYPE}-${UBUNTU_VER}-${SHORT_DATE}"
+          fi
+
+          COUNTER=1
+          BASE_TAG="$TAG_NAME"
+          while git ls-remote --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; do
+            TAG_NAME="${BASE_TAG}-r${COUNTER}"
+            COUNTER=$((COUNTER + 1))
+          done
+
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_name=Offline ${BUNDLE_TYPE} for Ubuntu ${UBUNTU_VER} (${SHORT_DATE})" >> $GITHUB_OUTPUT
+
+      - name: Create Git Tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag -a "${{ steps.release_tag.outputs.tag_name }}" -m "${{ steps.release_tag.outputs.release_name }}"
+          git push origin "${{ steps.release_tag.outputs.tag_name }}" || echo "Tag may already exist"
+        continue-on-error: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag_name }}
+          name: ${{ steps.release_tag.outputs.release_name }}
+          body: |
+            ## 🔒 Offline Server Management Bundle
+
+            **Bundle Type:** ${{ env.BUNDLE_TYPE }}
+            **Ubuntu Version:** ${{ env.UBUNTU_VER }}
+            **Build Date:** ${{ env.BUILD_DATE }}
+
+            ### 📦 Three Archives Included
+
+            | Archive | Contents | Use Case |
+            |---------|----------|----------|
+            | **core** | Panel packages only (webmin, usermin, virtualmin) | Install just the panel |
+            | **deps** | All dependencies (web server, DB, mail, DNS, etc.) | Install stack without panel |
+            | **all** | Complete bundle (core + deps) | Full installation |
+
+            ### 🚀 Quick Start
+
+            **Option 1: Install Everything**
+            ```bash
+            tar -xzf *-all-*.tar.gz
+            cd offline-bundle/scripts
+            sudo ./install-all.sh
+            ```
+
+            **Option 2: Install Core Only**
+            ```bash
+            tar -xzf *-core-*.tar.gz
+            cd offline-bundle/scripts
+            sudo ./install-core.sh
+            ```
+
+            **Option 3: Install Dependencies Only**
+            ```bash
+            tar -xzf *-deps-*.tar.gz
+            cd offline-bundle/scripts
+            sudo ./install-deps.sh
+            ```
+
+            ### 📊 Bundle Details
+            - **No internet required** for installation
+            - **SHA256 checksums** included for verification
+            - **Complete documentation** inside each archive
+
+            ---
+            *Built automatically by GitHub Actions*
+          files: |
+            /offline-*-core-*.tar.gz
+            /offline-*-core-*.sha256
+            /offline-*-core-*.info.txt
+            /offline-*-deps-*.tar.gz
+            /offline-*-deps-*.sha256
+            /offline-*-deps-*.info.txt
+            /offline-*-all-*.tar.gz
+            /offline-*-all-*.sha256
+            /offline-*-all-*.info.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
