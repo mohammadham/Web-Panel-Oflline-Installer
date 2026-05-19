@@ -2,7 +2,7 @@
 # Create a comprehensive GitHub Actions workflow for offline package preparation
 # and a detailed comparison table
 
-workflow_content = '''name: Build Offline Virtualmin/Webmin Package Bundle
+name: Build Offline Virtualmin/Webmin Package Bundle
 
 on:
   workflow_dispatch:
@@ -305,10 +305,4 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: /offline-*.tar.gz
-'''
 
-with open('/mnt/agents/output/offline-bundle-workflow.yml', 'w') as f:
-    f.write(workflow_content)
-
-print("✅ Workflow file created successfully!")
-print(f"📄 File size: {len(workflow_content)} characters")
