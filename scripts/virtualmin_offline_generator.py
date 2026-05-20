@@ -41,11 +41,11 @@ def fetch_script(url):
 
 def extract_urls_from_script(script_content):
     urls = set()
-
+    
     for match in re.findall(r"https?://[^\s\"'<>()|]+", script_content):
         if match.startswith("http"):
             urls.add(match)
-
+    
     host_vars = {
         "download_virtualmin_host": VIRTUALMIN_DOWNLOAD_HOST,
         "download_virtualmin_host_lib": VIRTUALMIN_DOWNLOAD_HOST,
@@ -56,15 +56,15 @@ def extract_urls_from_script(script_content):
         "download_webmin_host_rc": "rc.download.webmin.dev",
         "download_old_virtualmin_host": VIRTUALMIN_OLD_HOST,
     }
-
+    
     for var_name, host in host_vars.items():
         urls.add(f"https://{host}/slib.sh")
         urls.add(f"https://{host}/install")
         urls.add(f"https://{host}/migrate")
-
+    
     for match in re.findall(r"dl\.fedoraproject\.org[^\s\"'<>]+", script_content):
         urls.add(f"https://{match}")
-
+    
     return sorted(urls)
 
 
@@ -87,14 +87,12 @@ def download_all_packages(core_files, dep_files):
     packages_dir = PROJECT_ROOT / "packages"
     os.makedirs(packages_dir / "core", exist_ok=True)
     os.makedirs(packages_dir / "dependencies", exist_ok=True)
-
-    print("
-[DOWNLOAD] Core packages...")
+    
+    print("[DOWNLOAD] Core packages...")
     for f in core_files:
         download_file(f["url"], str(packages_dir / "core"))
-
-    print("
-[DOWNLOAD] Dependencies...")
+    
+    print("[DOWNLOAD] Dependencies...")
     for f in dep_files:
         download_file(f["url"], str(packages_dir / "dependencies"))
 
@@ -102,11 +100,11 @@ def download_all_packages(core_files, dep_files):
 def categorize_urls(urls):
     core_files = []
     dependency_files = []
-
+    
     for url in urls:
         filename = os.path.basename(url)
         is_core = any(core_pkg in filename.lower() for core_pkg in CORE_PACKAGES)
-
+        
         if any(host in url for host in [VIRTUALMIN_DOWNLOAD_HOST, WEBMIN_HOST, VIRTUALMIN_OLD_HOST]):
             if is_core or any(ext in filename for ext in [".rpm", ".deb", ".tar.gz", ".sh"]):
                 if not any(dep in url for dep in ["slib.sh", "spinner", "log4sh", "oschooser"]):
@@ -117,7 +115,7 @@ def categorize_urls(urls):
                 dependency_files.append({"url": url, "filename": filename, "category": "dependency"})
         else:
             dependency_files.append({"url": url, "filename": filename, "category": "dependency"})
-
+    
     return core_files, dependency_files
 
 
@@ -131,7 +129,7 @@ def generate_modified_installer(original_script, local_repo_path="/opt/virtualmi
     ]
     for old, new in replacements:
         modified = modified.replace(old, new)
-
+    
     offline_header = f"""# OFFLINE MODE - Modified for local installation
 # Local repository path: {local_repo_path}
 # Generated: {datetime.now().isoformat()}
@@ -184,15 +182,15 @@ def main():
     parser.add_argument("--download-only", action="store_true", help="Only download packages")
     parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "virtualmin-offline-bundle"), help="Output directory")
     args = parser.parse_args()
-
+    
     print("=" * 60)
     print("Virtualmin Offline Bundle Generator")
     print("=" * 60)
     print(f"Project Root: {PROJECT_ROOT}")
     print(f"Script Dir: {SCRIPT_DIR}")
-
+    
     script_url = f"https://{VIRTUALMIN_DOWNLOAD_HOST}/virtualmin-install"
-    print(f"\n[1/6] Downloading install script...")
+    print(f"[1/6] Downloading install script...")
     script_content = fetch_script(script_url)
     if not script_content:
         script_url = f"https://{VIRTUALMIN_OLD_HOST}/gpl/scripts/virtualmin-install.sh"
@@ -200,65 +198,64 @@ def main():
         if not script_content:
             print("ERROR: Failed to download install script")
             sys.exit(1)
-
+    
     version_match = re.search(r"VER=([0-9.]+)", script_content)
     script_version = version_match.group(1) if version_match else "unknown"
     print(f"   Version: {script_version}")
-
-    print("\n[2/6] Extracting URLs...")
+    
+    print("[2/6] Extracting URLs...")
     urls = extract_urls_from_script(script_content)
     print(f"   Found {len(urls)} URLs")
-
-    # CRITICAL FIX: Write urls.txt to PROJECT ROOT
+    
     urls_file = PROJECT_ROOT / "urls.txt"
     with open(urls_file, "w") as f:
         for url in urls:
             f.write(url + "\n")
     print(f"   Saved to: {urls_file}")
-
+    
     if args.extract_only:
-        print("\n[EXTRACT-ONLY] Complete!")
+        print("[EXTRACT-ONLY] Complete!")
         return
-
-    print("\n[3/6] Categorizing...")
+    
+    print("[3/6] Categorizing...")
     core_files, dep_files = categorize_urls(urls)
     print(f"   Core: {len(core_files)}, Dependencies: {len(dep_files)}")
-
+    
     if args.download_only:
-        print("\n[4/6] Downloading packages...")
+        print("[4/6] Downloading packages...")
         download_all_packages(core_files, dep_files)
         print("   Done!")
         return
-
-    print("\n[4/6] Generating offline installer...")
+    
+    print("[4/6] Generating offline installer...")
     modified_installer = generate_modified_installer(script_content)
-
-    print("\n[5/6] Generating documentation...")
+    
+    print("[5/6] Generating documentation...")
     manifest = generate_manifest(core_files, dep_files, script_version)
     readme = generate_readme(core_files, dep_files, script_version)
     download_script = generate_download_script(core_files, dep_files)
-
-    print("\n[6/6] Saving files...")
+    
+    print("[6/6] Saving files...")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
-
+    
     with open(output_dir / "virtualmin-install-original.sh", "w") as f:
         f.write(script_content)
-
+    
     with open(output_dir / "virtualmin-install-offline.sh", "w") as f:
         f.write(modified_installer)
     os.chmod(output_dir / "virtualmin-install-offline.sh", 0o755)
-
+    
     with open(output_dir / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
-
+    
     with open(output_dir / "README.md", "w") as f:
         f.write(readme)
-
+    
     with open(output_dir / "download-all.sh", "w") as f:
         f.write(download_script)
     os.chmod(output_dir / "download-all.sh", 0o755)
-
+    
     print("\n" + "=" * 60)
     print("GENERATION COMPLETE!")
     print("=" * 60)
