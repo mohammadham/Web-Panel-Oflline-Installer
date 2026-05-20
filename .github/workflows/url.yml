@@ -1,0 +1,153 @@
+# راه‌حل نصب آفلاین Virtualmin
+
+## Virtualmin Offline Installation Solution
+
+این پروژه شامل دو فایل اصلی است که به شما امکان می‌دهد Virtualmin را به صورت کاملاً آفلاین روی سرور لینوکسی خود نصب کنید.
+
+---
+
+## 📁 فایل‌های تولید شده
+
+### 1. `virtualmin_offline_generator.py`
+**اسکریپت پایتون برای استخراج و تحلیل**
+
+این اسکریپت وظایف زیر را انجام می‌دهد:
+- دانلود آخرین نسخه اسکریپت نصب Virtualmin از `download.virtualmin.com`
+- استخراج تمام URLهای دانلود از داخل اسکریپت
+- دسته‌بندی فایل‌ها به دو گروه **Core** (هسته) و **Dependencies** (وابستگی‌ها)
+- تولید اسکریپت نصب اصلاح‌شده برای حالت آفلاین
+- تولید فایل‌های مستندات (README, manifest.json)
+- تولید اسکریپت `download-all.sh` برای دانلود خودکار تمام پکیج‌ها
+
+### 2. `virtualmin_offline_workflow.yml`
+**GitHub Actions Workflow برای اتوماسیون کامل**
+
+این workflow وظایف زیر را به صورت خودکار انجام می‌دهد:
+- دانلود و تحلیل اسکریپت نصب Virtualmin
+- دانلود تمام پکیج‌های Virtualmin از `download.virtualmin.com`
+- دانلود پکیج‌های Webmin از `download.webmin.com`
+- دانلود وابستگی‌های خارجی (EPEL, slib.sh, etc.)
+- دسته‌بندی و کاتالوگ کردن تمام فایل‌ها با SHA256
+- تولید اسکریپت نصب آفلاین
+- تولید مستندات
+- ساخت سه فایل آرشیو مجزا:
+  1. **Core Archive** - پکیج‌های هسته Virtualmin
+  2. **Dependencies Archive** - وابستگی‌ها و اسکریپت‌های کمکی
+  3. **Full Bundle** - تمام فایل‌ها در یک آرشیو
+- انتشار خودکار در GitHub Releases
+
+---
+
+## 🔧 نحوه استفاده
+
+### روش ۱: استفاده از GitHub Actions (توصیه شده)
+
+1. فایل `virtualmin_offline_workflow.yml` را در مسیر `.github/workflows/` ریپازیتوری خود کپی کنید
+2. به بخش **Actions** در GitHub بروید
+3. workflow را به صورت دستی اجرا کنید (Run workflow) یا منتظر زمان‌بندی هفتگی بمانید
+4. از بخش **Releases**، آرشیوهای تولید شده را دانلود کنید
+
+### روش ۲: استفاده از اسکریپت پایتون به صورت محلی
+
+```bash
+# نصب پیش‌نیازها
+pip install requests beautifulsoup4
+
+# اجرای اسکریپت
+python3 virtualmin_offline_generator.py
+
+# دانلود تمام پکیج‌ها
+cd virtualmin-offline-bundle
+chmod +x download-all.sh
+./download-all.sh
+```
+
+---
+
+## 📦 ساختار فایل‌های خروجی
+
+```
+virtualmin-offline-bundle/
+├── virtualmin-install-original.sh    # اسکریپت اصلی (مرجع)
+├── virtualmin-install-offline.sh     # اسکریپت اصلاح‌شده برای آفلاین
+├── manifest.json                      # لیست کامل فایل‌ها با SHA256
+├── README.md                          # مستندات نصب
+├── download-all.sh                  # اسکریپت دانلود خودکار
+└── packages/
+    ├── core/                          # پکیج‌های هسته
+    │   ├── webmin-*.deb/rpm
+    │   ├── usermin-*.deb/rpm
+    │   ├── virtualmin-core-*.deb/rpm
+    │   └── ...
+    └── dependencies/                  # وابستگی‌ها
+        ├── slib.sh
+        ├── epel-release-*.rpm
+        └── ...
+```
+
+---
+
+## 🚀 نصب روی سرور آفلاین
+
+### پیش‌نیازها
+- سیستم‌عامل تازه نصب شده (Rocky Linux, AlmaLinux, Debian, Ubuntu LTS)
+- حداقل 1GB RAM (4GB برای نصب کامل با ایمیل)
+- دسترسی root
+
+### مراحل نصب
+
+```bash
+# 1. انتقال آرشیو به سرور آفلاین (USB, SCP, etc.)
+# 2. استخراج آرشیو
+sudo mkdir -p /opt/virtualmin-offline
+sudo tar -xzf virtualmin-*-full-offline-*.tar.gz -C /opt/virtualmin-offline
+
+# 3. اجرای نصب‌کننده آفلاین
+cd /opt/virtualmin-offline
+sudo chmod +x virtualmin-install-offline.sh
+sudo ./virtualmin-install-offline.sh --bundle LAMP
+
+# 4. دسترسی به پنل
+# باز کردن مرورگر: https://your-server-ip:10000
+# لاگین با credentials روت
+```
+
+---
+
+## 📋 پکیج‌های هسته (Core)
+
+| پکیج | توضیحات |
+|------|---------|
+| webmin | پنل مدیریت وب‌بیس |
+| usermin | رابط کاربری سطح کاربر |
+| virtualmin-core | هسته اصلی Virtualmin |
+| virtualmin-config | سیستم پیکربندی |
+| webmin-virtual-server | مدیریت سرور مجازی |
+| virtualmin-lamp-stack | پکیج کامل LAMP |
+| virtualmin-lemp-stack | پکیج کامل LEMP |
+| procmail-wrapper | wrapper پروcmail |
+| jailkit | محیط restricted shell |
+
+---
+
+## ⚠️ نکات مهم
+
+1. **امنیت:** این باندل شامل پکیج‌هایی است که در زمان تولید موجود بوده‌اند. برای استفاده در محیط production، توصیه می‌شود ماهانه regenerate شود.
+
+2. **نسخه GPL:** این باندل برای نسخه GPL Virtualmin است. برای نسخه Professional، باید license key را به صورت دستی در `/etc/virtualmin-license` اضافه کنید.
+
+3. **سازگاری OS:** مطمئن شوید نسخه OS شما در لیست پشتیبانی شده باشد.
+
+4. **نصب تازه:** این اسکریپت فقط برای نصب تازه (fresh install) طراحی شده است. هرگز روی سیستمی که قبلاً Virtualmin دارد اجرا نکنید.
+
+---
+
+## 🔗 منابع
+
+- [Virtualmin Official](https://www.virtualmin.com)
+- [Virtualmin Install Script Source](https://github.com/virtualmin/virtualmin-install)
+- [Webmin](https://webmin.com)
+
+---
+
+*تولید شده توسط Virtualmin Offline Bundle Generator*
