@@ -37,7 +37,7 @@ jobs:
     permissions:
       contents: write
       packages: read
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -50,44 +50,46 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget curl jq reprepro createrepo-c
+          sudo apt-get install -y wget curl jq
           pip install requests beautifulsoup4
 
       - name: Download and analyze Virtualmin install script
         id: analyze
         run: |
-          # Download the latest install script
           echo "Downloading Virtualmin install script..."
-          wget -q "https://${{ env.VIRTUALMIN_HOST }}/virtualmin-install" -O virtualmin-install.sh || \
-          wget -q "https://${{ env.SOFTWARE_HOST }}/gpl/scripts/virtualmin-install.sh" -O virtualmin-install.sh
-          
+          wget -q "https://${{ env.VIRTUALMIN_HOST }}/virtualmin-install" -O virtualmin-install.sh ||           wget -q "https://${{ env.SOFTWARE_HOST }}/gpl/scripts/virtualmin-install.sh" -O virtualmin-install.sh
+
           # Extract version
-          VER=$(grep -oP 'VER=\\K[0-9.]+' virtualmin-install.sh || echo "unknown")
+          VER=$(grep -oP 'VER=\K[0-9.]+' virtualmin-install.sh || echo "unknown")
           echo "VIRTUALMIN_VERSION=$VER" >> $GITHUB_ENV
           echo "Detected Virtualmin version: $VER"
-          
-          # Make executable for reference
+
           chmod +x virtualmin-install.sh
 
-      - name: Extract all download URLs from script
+      - name: Extract all download URLs from script using Python
         id: extract_urls
         run: |
-          echo "Extracting all URLs from install script..."
-          
-          # Create extraction script
-          cat > extract_urls.py << 'PYEOF'
+          echo "Extracting all URLs from install script using Python..."
+
+          # Use the external Python script if available, otherwise inline
+          if [ -f "virtualmin_offline_generator.py" ]; then
+            echo "Using external Python script..."
+            python3 virtualmin_offline_generator.py --extract-only
+          else
+            echo "External script not found, using inline extraction..."
+            cat > extract_urls.py << 'PYEOF'
           import re
-          import sys
-          
+          import os
+
           with open('virtualmin-install.sh', 'r') as f:
               content = f.read()
-          
+
           urls = set()
-          
+
           # Pattern 1: Direct URLs in quotes
-          for match in re.findall(r'https?://[^\\s\'"<>\\)\\|]+', content):
+          for match in re.findall(r'https?://[^\s'"<>\)\|]+', content):
               urls.add(match)
-          
+
           # Pattern 2: Variable constructions
           host_patterns = [
               (r'download_virtualmin_host\s*=\s*"([^"]+)"', 'download.virtualmin.com'),
@@ -95,30 +97,30 @@ jobs:
               (r'download_webmin_host\s*=\s*"([^"]+)"', 'download.webmin.com'),
               (r'download_old_virtualmin_host\s*=\s*"([^"]+)"', 'software.virtualmin.com'),
           ]
-          
+
           for pattern, default in host_patterns:
               m = re.search(pattern, content)
               host = m.group(1) if m else default
-              
+
               # Add known paths
               urls.add(f"https://{host}/slib.sh")
               urls.add(f"https://{host}/install")
               urls.add(f"https://{host}/migrate")
-          
+
           # EPEL URLs
-          for match in re.findall(r'dl\.fedoraproject\.org[^\\s\'"<>]+', content):
+          for match in re.findall(r'dl\.fedoraproject\.org[^\s'"<>]+', content):
               urls.add(f"https://{match}")
-          
+
           # Write to file
           with open('urls.txt', 'w') as f:
               for url in sorted(urls):
-                  f.write(url + '\\n')
-          
+                  f.write(url + '\n')
+
           print(f"Extracted {len(urls)} unique URLs")
           PYEOF
-          
-          python3 extract_urls.py
-          
+            python3 extract_urls.py
+          fi
+
           # Count URLs
           URL_COUNT=$(wc -l < urls.txt)
           echo "URL_COUNT=$URL_COUNT" >> $GITHUB_ENV
@@ -128,22 +130,18 @@ jobs:
         id: download_packages
         run: |
           mkdir -p packages/core packages/dependencies
-          
+
           echo "Downloading from download.virtualmin.com..."
-          
+
           # Get directory listing and download all packages
-          wget -q -O - "https://${{ env.VIRTUALMIN_HOST }}/" | \
-            grep -oP 'href="\\K[^"]+\.(rpm|deb|tar\.gz|sh)' | \
-            while read file; do
+          wget -q -O - "https://${{ env.VIRTUALMIN_HOST }}/" |             grep -oP 'href="\K[^"]+\.(rpm|deb|tar\.gz|sh)' |             while read file; do
               echo "Downloading: $file"
-              wget -q -P packages/core "https://${{ env.VIRTUALMIN_HOST }}/$file" || \
-              curl -sL -o "packages/core/$file" "https://${{ env.VIRTUALMIN_HOST }}/$file"
+              wget -q -P packages/core "https://${{ env.VIRTUALMIN_HOST }}/$file" ||               curl -sL -o "packages/core/$file" "https://${{ env.VIRTUALMIN_HOST }}/$file"
             done
-          
+
           # Download slib.sh
-          wget -q -P packages/dependencies "https://${{ env.VIRTUALMIN_HOST }}/slib.sh" || \
-          wget -q -P packages/dependencies "https://${{ env.SOFTWARE_HOST }}/lib/slib.sh"
-          
+          wget -q -P packages/dependencies "https://${{ env.VIRTUALMIN_HOST }}/slib.sh" ||           wget -q -P packages/dependencies "https://${{ env.SOFTWARE_HOST }}/lib/slib.sh"
+
           echo "Core packages downloaded:"
           ls -la packages/core/
 
@@ -151,11 +149,9 @@ jobs:
         id: download_webmin
         run: |
           echo "Downloading Webmin packages..."
-          
+
           # Download webmin packages from webmin repo
-          wget -q -O - "https://${{ env.WEBMIN_HOST }}/" | \
-            grep -oP 'href="\\K[^"]+\.(rpm|deb|tar\.gz)' | head -20 | \
-            while read file; do
+          wget -q -O - "https://${{ env.WEBMIN_HOST }}/" |             grep -oP 'href="\K[^"]+\.(rpm|deb|tar\.gz)' | head -20 |             while read file; do
               echo "Downloading webmin: $file"
               wget -q -P packages/core "https://${{ env.WEBMIN_HOST }}/$file" || true
             done
@@ -164,12 +160,12 @@ jobs:
         id: download_deps
         run: |
           echo "Downloading external dependencies..."
-          
+
           # EPEL release packages for RHEL-based systems
           for ver in 7 8 9; do
             wget -q -P packages/dependencies "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${ver}.noarch.rpm" || true
           done
-          
+
           # Download any additional URLs found in script
           while read url; do
             if [[ "$url" == *"dl.fedoraproject.org"* ]] || [[ "$url" == *"software.virtualmin.com/lib"* ]]; then
@@ -187,7 +183,7 @@ jobs:
           import json
           import hashlib
           from datetime import datetime
-          
+
           def get_file_info(filepath):
               stat = os.stat(filepath)
               sha256 = hashlib.sha256()
@@ -200,31 +196,31 @@ jobs:
                   'sha256': sha256.hexdigest(),
                   'path': filepath
               }
-          
+
           # Core Virtualmin/Webmin packages
           core_keywords = [
               'webmin', 'usermin', 'virtualmin', 'virtual-server',
               'virtualmin-nginx', 'virtualmin-config', 'virtualmin-lamp',
               'virtualmin-lemp', 'procmail-wrapper', 'jailkit'
           ]
-          
+
           core_files = []
           dep_files = []
-          
+
           for root, dirs, files in os.walk('packages'):
               for file in files:
                   filepath = os.path.join(root, file)
                   info = get_file_info(filepath)
-                  
+
                   is_core = any(kw in file.lower() for kw in core_keywords)
-                  
+
                   if is_core or 'core' in root:
                       info['category'] = 'core'
                       core_files.append(info)
                   else:
                       info['category'] = 'dependency'
                       dep_files.append(info)
-          
+
           manifest = {
               'generated_at': datetime.now().isoformat(),
               'virtualmin_version': os.environ.get('VIRTUALMIN_VERSION', 'unknown'),
@@ -236,13 +232,13 @@ jobs:
               'core_files': sorted(core_files, key=lambda x: x['filename']),
               'dependency_files': sorted(dep_files, key=lambda x: x['filename'])
           }
-          
+
           with open('manifest.json', 'w') as f:
               json.dump(manifest, f, indent=2)
-          
+
           print(f"Cataloged {len(core_files)} core + {len(dep_files)} dependency files")
           PYEOF
-          
+
           python3 catalog.py
 
       - name: Generate offline install script
@@ -251,306 +247,12 @@ jobs:
           cat > generate_offline_installer.py << 'PYEOF'
           import re
           import os
-          
+
           with open('virtualmin-install.sh', 'r') as f:
               original = f.read()
-          
+
           # Create offline version
           offline = original
-          
+
           # Add offline header
-          offline_header = '''# VIRTUALMIN OFFLINE INSTALLER
-# This script has been modified to work without internet access
-# All packages must be pre-downloaded to /opt/virtualmin-offline/packages/
-# Generated: ''' + os.environ.get('VIRTUALMIN_VERSION', 'unknown') + '''
-VIRTUALMIN_OFFLINE_MODE=1
-VIRTUALMIN_LOCAL_REPO="/opt/virtualmin-offline/packages"
-
-'''
-          
-          offline = offline.replace('#!/bin/sh', '#!/bin/sh\\n' + offline_header)
-          
-          # Replace download functions with local copies
-          # Replace wget/curl downloads with local file copies
-          offline = re.sub(
-              r'\$download\s+"https?://[^"]+"',
-              r'cp "${VIRTUALMIN_LOCAL_REPO}/$(basename "https://\\g<0>")" . 2>/dev/null || true',
-              offline
-          )
-          
-          # Replace host variables
-          offline = offline.replace(
-              'download_virtualmin_host="download.virtualmin.com"',
-              'download_virtualmin_host="file:///opt/virtualmin-offline/packages/core"'
-          )
-          offline = offline.replace(
-              'download_webmin_host="download.webmin.com"',
-              'download_webmin_host="file:///opt/virtualmin-offline/packages/core"'
-          )
-          
-          with open('packages/virtualmin-install-offline.sh', 'w') as f:
-              f.write(offline)
-          
-          os.chmod('packages/virtualmin-install-offline.sh', 0o755)
-          print("Generated offline installer")
-          PYEOF
-          
-          python3 generate_offline_installer.py
-
-      - name: Generate README and documentation
-        id: generate_docs
-        run: |
-          cat > generate_docs.py << 'PYEOF'
-          import json
-          import os
-          from datetime import datetime
-          
-          with open('manifest.json', 'r') as f:
-              manifest = json.load(f)
-          
-          version = os.environ.get('VIRTUALMIN_VERSION', 'unknown')
-          bundle_type = os.environ.get('BUNDLE_TYPE', 'LAMP')
-          
-          readme = f"""# Virtualmin Offline Installation Bundle
-
-**Virtualmin Version:** {version}  
-**Bundle Type:** {bundle_type}  
-**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC  
-**Total Files:** {manifest['total_files']} ({manifest['core_files_count']} core + {manifest['dependency_files_count']} dependencies)
-
-## 📦 Contents
-
-### Core Packages ({manifest['core_files_count']} files)
-| Filename | Size | SHA256 |
-|----------|------|--------|
-"""
-          
-          for f in manifest['core_files']:
-              size_mb = f['size'] / (1024*1024)
-              readme += f"| `{f['filename']}` | {size_mb:.1f} MB | `{f['sha256'][:16]}...` |\\n"
-          
-          readme += f"""
-### Dependencies ({manifest['dependency_files_count']} files)
-| Filename | Size | SHA256 |
-|----------|------|--------|
-"""
-          
-          for f in manifest['dependency_files']:
-              size_kb = f['size'] / 1024
-              readme += f"| `{f['filename']}` | {size_kb:.1f} KB | `{f['sha256'][:16]}...` |\\n"
-          
-          readme += """
-## 🚀 Installation Instructions
-
-### Prerequisites
-- Fresh installation of supported OS:
-  - **RHEL-based:** Rocky Linux 8/9/10, AlmaLinux 8/9/10, RHEL 8/9/10
-  - **Debian-based:** Debian 11/12/13, Ubuntu 20.04/22.04/24.04 LTS
-- Minimum 1GB RAM (4GB recommended for full install with mail)
-- Root access
-- Server without internet access (air-gapped)
-
-### Step-by-Step Installation
-
-1. **Extract the bundle** on your offline server:
-   ```bash
-   sudo mkdir -p /opt/virtualmin-offline
-   sudo tar -xzf virtualmin-offline-bundle.tar.gz -C /opt/virtualmin-offline
-   ```
-
-2. **Run the offline installer**:
-   ```bash
-   cd /opt/virtualmin-offline
-   sudo chmod +x virtualmin-install-offline.sh
-   sudo ./virtualmin-install-offline.sh --bundle """ + bundle_type + """
-   ```
-
-3. **Complete post-install wizard**:
-   - Open browser: `https://your-server-ip:10000`
-   - Login with root credentials
-   - Follow the setup wizard
-
-## 📋 Package Categories
-
-**Core Packages** - Essential Virtualmin/Webmin components:
-- webmin (Web-based system administration)
-- usermin (User-level web interface)
-- virtualmin-core (Core Virtualmin functionality)
-- virtualmin-config (Configuration system)
-- webmin-virtual-server (Virtual server management)
-- virtualmin-lamp/lemp-stack (Full stack metapackages)
-
-**Dependencies** - Supporting libraries and utilities:
-- slib.sh (Virtualmin utility library)
-- EPEL release packages (for RHEL systems)
-- GPG keys and repository configurations
-
-## ⚠️ Important Notes
-
-1. **Security:** This bundle contains packages as of the generation date. 
-   For production use, consider regenerating monthly for security updates.
-
-2. **GPL Version:** This bundle is for Virtualmin GPL. 
-   For Professional, add your license key to `/etc/virtualmin-license` before install.
-
-3. **OS Compatibility:** Ensure your OS version matches the supported list.
-   The installer will check and fail if unsupported.
-
-4. **Fresh Install Only:** Never run on a system with existing Virtualmin installation.
-
-## 🔧 Manual Package Installation (Alternative)
-
-If the automated installer doesn't work:
-
-**For Debian/Ubuntu:**
-```bash
-cd /opt/virtualmin-offline/packages/core
-sudo dpkg -i *.deb
-sudo apt-get install -f
-```
-
-**For RHEL/Rocky/Alma:**
-```bash
-cd /opt/virtualmin-offline/packages/core
-sudo rpm -Uvh *.rpm --nodeps
-sudo dnf install -y *.rpm
-```
-
-## 📞 Support
-
-- Virtualmin Documentation: https://www.virtualmin.com/documentation/
-- Virtualmin Forums: https://forum.virtualmin.com/
-- This offline bundle: Open an issue in this repository
-
----
-*Generated automatically by GitHub Actions*  
-*Repository: ${{ github.repository }}*
-"""
-          
-          with open('packages/README.md', 'w') as f:
-              f.write(readme)
-          
-          # Also save manifest in packages dir
-          with open('packages/manifest.json', 'w') as f:
-              json.dump(manifest, f, indent=2)
-          
-          print("Generated README.md and manifest.json in packages/")
-          PYEOF
-          
-          python3 generate_docs.py
-
-      - name: Create archive bundles
-        id: create_archives
-        run: |
-          VERSION=${{ env.VIRTUALMIN_VERSION }}
-          BUNDLE=${{ env.BUNDLE_TYPE }}
-          DATE=$(date +%Y%m%d)
-          
-          # Create three archives as requested
-          
-          # 1. Core packages only
-          echo "Creating core-only archive..."
-          tar -czf "virtualmin-${VERSION}-core-${BUNDLE}-${DATE}.tar.gz" \
-            -C packages core/ manifest.json README.md virtualmin-install-offline.sh
-          
-          # 2. Dependencies only
-          echo "Creating dependencies archive..."
-          tar -czf "virtualmin-${VERSION}-deps-${BUNDLE}-${DATE}.tar.gz" \
-            -C packages dependencies/
-          
-          # 3. Full bundle (everything)
-          echo "Creating full bundle archive..."
-          tar -czf "virtualmin-${VERSION}-full-offline-${BUNDLE}-${DATE}.tar.gz" \
-            -C packages .
-          
-          # List archives
-          ls -lh *.tar.gz
-          
-          # Save archive names for release
-          echo "CORE_ARCHIVE=virtualmin-${VERSION}-core-${BUNDLE}-${DATE}.tar.gz" >> $GITHUB_ENV
-          echo "DEPS_ARCHIVE=virtualmin-${VERSION}-deps-${BUNDLE}-${DATE}.tar.gz" >> $GITHUB_ENV
-          echo "FULL_ARCHIVE=virtualmin-${VERSION}-full-offline-${BUNDLE}-${DATE}.tar.gz" >> $GITHUB_ENV
-          echo "RELEASE_TAG=v${VERSION}-${DATE}" >> $GITHUB_ENV
-
-      - name: Create GitHub Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: Virtualmin ${{ env.VIRTUALMIN_VERSION }} Offline Bundle (${{ env.BUNDLE_TYPE }})
-          body: |
-            ## Virtualmin Offline Installation Bundle
-            
-            **Version:** ${{ env.VIRTUALMIN_VERSION }}  
-            **Bundle Type:** ${{ env.BUNDLE_TYPE }}  
-            **Generated:** ${{ github.run_started_at }}
-            
-            ### 📦 Archives Included
-            
-            1. **Core Package** (`${{ env.CORE_ARCHIVE }}`)
-               - Essential Virtualmin/Webmin packages
-               - Offline installer script
-               - Documentation
-            
-            2. **Dependencies** (`${{ env.DEPS_ARCHIVE }}`)
-               - Helper scripts (slib.sh, etc.)
-               - EPEL release packages
-               - External dependencies
-            
-            3. **Full Bundle** (`${{ env.FULL_ARCHIVE }}`)
-               - Everything in one archive
-               - Complete offline installation set
-            
-            ### 🚀 Quick Start
-            
-            ```bash
-            # On offline server:
-            tar -xzf ${{ env.FULL_ARCHIVE }} -C /opt/virtualmin-offline
-            cd /opt/virtualmin-offline
-            sudo ./virtualmin-install-offline.sh --bundle ${{ env.BUNDLE_TYPE }}
-            ```
-            
-            ### 📋 File Count
-            - Core packages: ${{ env.URL_COUNT }}+ files
-            - See `manifest.json` in each archive for complete listing
-            
-            ### ⚠️ Notes
-            - For **GPL version** (Professional requires license key)
-            - Packages are current as of generation date
-            - Regenerate monthly for security updates
-          files: |
-            ${{ env.CORE_ARCHIVE }}
-            ${{ env.DEPS_ARCHIVE }}
-            ${{ env.FULL_ARCHIVE }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload artifacts for debugging
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: build-artifacts-${{ env.RELEASE_TAG }}
-          path: |
-            manifest.json
-            urls.txt
-            virtualmin-install.sh
-            packages/
-          retention-days: 7
-
-      - name: Summary
-        run: |
-          echo "## ✅ Virtualmin Offline Bundle Build Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Virtualmin Version | ${{ env.VIRTUALMIN_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Bundle Type | ${{ env.BUNDLE_TYPE }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Release Tag | ${{ env.RELEASE_TAG }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Core Archive | ${{ env.CORE_ARCHIVE }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Deps Archive | ${{ env.DEPS_ARCHIVE }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Full Archive | ${{ env.FULL_ARCHIVE }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Download from Release" >> $GITHUB_STEP_SUMMARY
-          echo "https://github.com/${{ github.repository }}/releases/tag/${{ env.RELEASE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          offline_header = 
