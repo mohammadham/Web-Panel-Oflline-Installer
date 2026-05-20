@@ -72,9 +72,9 @@ jobs:
           echo "Extracting all URLs from install script using Python..."
 
           # Use the external Python script if available, otherwise inline
-          if [ -f "virtualmin_offline_generator.py" ]; then
+          if [ -f "scripts/virtualmin_offline_generator.py" ]; then
             echo "Using external Python script..."
-            python3 virtualmin_offline_generator.py --extract-only
+            python3 scripts/virtualmin_offline_generator.py --extract-only
           else
             echo "External script not found, using inline extraction..."
             cat > extract_urls.py << 'PYEOF'
